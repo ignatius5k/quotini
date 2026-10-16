@@ -1,0 +1,2 @@
+# Generated third-party bundles retain upstream literal/license whitespace.
+vendor/** -whitespace

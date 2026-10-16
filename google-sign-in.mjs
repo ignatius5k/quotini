@@ -28,7 +28,7 @@ export function createGoogleTokenSignIn(environment, clientId) {
       };
       // Allow time to complete Google's phone verification. A timeout is not
       // a user cancellation, and must be reported as a retryable failure.
-      const timer = environment.setTimeout(() => finish(authError("timeout", "Google sign-in timed out. Return to Ledgerly and try again.")), 300000);
+      const timer = environment.setTimeout(() => finish(authError("timeout", "Google sign-in timed out. Return to Quotini and try again.")), 300000);
       try {
         const client = oauth.initTokenClient({
           client_id: clientId,

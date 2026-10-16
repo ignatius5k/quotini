@@ -28,8 +28,10 @@ let aliceId;
 let bobId;
 const clients = [];
 function client(name) {
+  const selected = new Map();
   const backend = createFirebaseInvoiceBackend({ apiKey: "fake-emulator-key", projectId, appId: `test-${name}`, authDomain: `${projectId}.firebaseapp.com` }, null, {
     appName: name, memoryAuth: true, emulators: ports,
+    environment: { sessionStorage: { getItem: key => selected.get(key), setItem: (key, value) => selected.set(key, value) } },
   });
   clients.push(backend);
   return backend;
@@ -192,4 +194,113 @@ test("password reset uses Firebase action codes and permits login with the new p
   await bob.signIn("bob@example.test", "Reset-password-123!");
   assert.equal((await bob.getSession()).user.id, bobId);
   await assert.rejects(bob.signIn("bob@example.test", "Test-password-123!"));
+});
+
+test("payment evidence, remarks, filtering and concurrency are enforced", async () => {
+  const record = await alice.saveInvoice(aliceId, { id: "payment-test", invoice: invoice("Payment customer") });
+  const screenshot = "data:image/jpeg;base64,/9j/2Q==";
+  assert.equal((await alice.loadPayment(aliceId, record.id)).status, "unpaid");
+  await assert.rejects(alice.savePayment(aliceId, record.id, { status: "paid", remarks: "", confirmed: true, screenshot: "" }));
+  await alice.savePayment(aliceId, record.id, { status: "unpaid", remarks: "Awaiting transfer" });
+  await alice.savePayment(aliceId, record.id, { revision: 1, status: "paid", remarks: "Reference 123", confirmed: true, screenshot });
+  const remote = await otherDevice.loadPayment(aliceId, record.id);
+  assert.equal(remote.status, "paid"); assert.equal(remote.screenshot, screenshot); assert.equal(remote.remarks, "Reference 123");
+  assert.ok((await alice.listInvoices(aliceId, { status: "paid" })).records.some((r) => r.id === record.id));
+  assert.ok(!(await alice.listInvoices(aliceId, { status: "unpaid" })).records.some((r) => r.id === record.id));
+  await assert.rejects(otherDevice.savePayment(aliceId, record.id, { revision: 1, status: "unpaid", remarks: "stale" }), { code: "PAYMENT_REVISION_CONFLICT" });
+  const stranger = rules.authenticatedContext(bobId).firestore();
+  await assertFails(getDoc(doc(stranger, "users", aliceId, "payments", record.id)));
+  await assertFails(getDoc(doc(stranger, "users", aliceId, "payments", record.id, "evidence", "current")));
+  const ownerDb = rules.authenticatedContext(aliceId).firestore();
+  await assertFails(setDoc(doc(ownerDb, "users", aliceId, "payments", "invoice-1"), { status: "paid", remarks: "", revision: 1, verified: true, updatedAt: serverTimestamp() }));
+  await alice.savePayment(aliceId, record.id, { revision: 2, status: "refunded", remarks: "Refund sent", confirmed: true, screenshot });
+  await alice.savePayment(aliceId, record.id, { revision: 3, status: "unpaid", remarks: "Correction" });
+  assert.equal((await alice.loadPayment(aliceId, record.id)).screenshot, "");
+  await alice.deleteInvoice(aliceId, record.id, record.revision);
+});
+
+test("nested invoice folders persist across devices, filter pages, and restore from backup", async () => {
+  const parent = await alice.createFolder(aliceId, "Properties");
+  const child = await alice.createFolder(aliceId, "Eng Hoon", parent.id);
+  await assert.rejects(alice.createFolder(aliceId, " "));
+  await assert.rejects(alice.createFolder(aliceId, "Missing parent", "missing"));
+  const a = await alice.saveInvoice(aliceId, { id: "folder-a", folderId: child.id, invoice: invoice("FOLDER CUSTOMER") });
+  const b = await alice.saveInvoice(aliceId, { id: "folder-b", invoice: invoice("FOLDER CUSTOMER") });
+  assert.equal((await alice.listInvoices(aliceId, { folderId: child.id })).records[0].id, a.id);
+  await alice.moveInvoice(aliceId, b.id, child.id, "");
+  const first = await otherDevice.listInvoices(aliceId, { folderId: child.id, limit: 1, query: "FOLDER", status: "unpaid" });
+  const second = await otherDevice.listInvoices(aliceId, { folderId: child.id, limit: 1, query: "FOLDER", status: "unpaid", cursor: first.nextCursor });
+  assert.equal(first.total, 2);
+  assert.notEqual(first.records[0].id, second.records[0].id);
+  assert.equal(first.records[0].folderId, child.id);
+  assert.ok(first.folders.some(folder => folder.id === child.id && folder.parentId === parent.id));
+  assert.equal((await alice.listInvoices(aliceId, { folderId: parent.id })).total, 0);
+  await assert.rejects(alice.moveInvoice(aliceId, a.id, "", ""), /another device/);
+  await assert.rejects(alice.moveInvoice(aliceId, a.id, "missing", child.id), /no longer exists/);
+  const stranger = rules.authenticatedContext(bobId).firestore();
+  await assertFails(getDoc(doc(stranger, "users", aliceId, "folders", child.id)));
+  await assertFails(setDoc(doc(stranger, "users", aliceId, "invoiceFolders", a.id), { folderId: child.id }));
+  const ownerDb = rules.authenticatedContext(aliceId).firestore();
+  await assertFails(updateDoc(doc(ownerDb, "users", aliceId, "folders", parent.id), { parentId: child.id }));
+  const backup = await alice.exportAccountData(aliceId);
+  const restored = client("folder-restore");
+  const restoredId = (await restored.signUp("folders-restored@example.test", "Test-password-123!")).session.user.id;
+  await restored.migrateLocalData(restoredId, backup.history, backup.draft, backup.sequences, backup.payments, backup.organization);
+  assert.equal((await restored.listInvoices(restoredId, { folderId: child.id })).total, 2);
+  await alice.moveInvoice(aliceId, a.id, "", child.id);
+  assert.ok((await alice.listInvoices(aliceId, { folderId: "" })).records.some(record => record.id === a.id));
+  await alice.deleteInvoice(aliceId, b.id, b.revision);
+  assert.equal((await alice.loadFolders(aliceId)).placements.some(entry => entry.id === b.id), false);
+});
+
+test("invoice customization and booking folders survive saving and account export", async () => {
+  const logo = 'data:image/png;base64,iVBORw0KGgo=';
+  const custom = { ...invoice('COFFEE COMPANY'), igHandle: '@coffee.sg', terms: 'Payment is due in two days.', logo };
+  const folder = await alice.createBookingFolders(aliceId, 'weekend-market', '2026-10-17');
+  assert.equal((await alice.createBookingFolders(aliceId, 'weekend-market', '2026-10-17')).id, folder.id);
+  const organization = await alice.loadFolders(aliceId);
+  assert.ok(organization.folders.some(entry => entry.parentId === folder.id && entry.name === 'Furniture rental'));
+  await assert.rejects(alice.createBookingFolders(aliceId, 'events', '2026-02-30'));
+  const saved = await alice.saveInvoice(aliceId, { id: 'custom-invoice', invoice: custom, folderId: folder.id });
+  const loaded = (await otherDevice.listInvoices(aliceId, { query: 'coffee.sg' })).records[0];
+  assert.equal(loaded.id, saved.id);
+  for (const key of ['igHandle','terms','logo']) assert.equal(loaded.invoice[key], custom[key]);
+  assert.equal(loaded.folderId, folder.id);
+  const draft = await alice.loadDraft(aliceId);
+  await alice.saveDraft(aliceId, custom, undefined, draft.revision);
+  assert.equal((await otherDevice.loadDraft(aliceId)).invoice.logo, logo);
+  assert.equal((await alice.exportAccountData(aliceId)).history.find(entry=>entry.id===saved.id).invoice.terms, custom.terms);
+  await assert.rejects(alice.saveInvoice(aliceId, { id:'bad-handle', invoice:{...custom,igHandle:'bad handle'} }));
+});
+
+
+test("business profiles isolate invoices, drafts, folders and templates while retaining legacy data", async () => {
+  const profiles = await alice.listProfiles();
+  assert.ok(profiles.some(profile => profile.id === "default"));
+  const legacy = await alice.listInvoices(aliceId);
+  const profile = await alice.saveProfile({name:"Studio Two",terms:"Pay within two days.",logo:""});
+  await alice.selectProfile(profile.id);
+  const scopedId = (await alice.getSession()).user.id;
+  assert.notEqual(scopedId, aliceId);
+  assert.equal((await alice.listInvoices(scopedId)).total, 0);
+  await assert.rejects(alice.listInvoices(aliceId));
+  const saved = await alice.saveInvoice(scopedId, {id:"profile-invoice",invoice:invoice("Studio Two client")});
+  const folder = await alice.createFolder(scopedId,"Client projects");
+  await alice.moveInvoice(scopedId,saved.id,folder.id,"");
+  await alice.saveDraft(scopedId,invoice("Studio Two draft"));
+  assert.equal((await alice.loadDraft(scopedId)).invoice.billTo,"Studio Two draft");
+  const backup = await alice.exportAccountData(scopedId);
+  assert.equal(backup.history.length,1);
+  assert.equal(backup.organization.folders.length,1);
+  await assertFails(getDoc(doc(rules.authenticatedContext(bobId).firestore(),"users",aliceId,"profiles",profile.id,"invoices",saved.id)));
+  await assertFails(setDoc(doc(rules.authenticatedContext(bobId).firestore(),"users",aliceId,"profiles",profile.id),{name:"Stolen",logo:"",terms:""}));
+  await alice.selectProfile("default");
+  assert.equal((await alice.getSession()).user.id,aliceId);
+  assert.equal((await alice.listInvoices(aliceId)).total,legacy.total);
+  assert.ok(!(await alice.listInvoices(aliceId)).records.some(record=>record.id===saved.id));
+  await otherDevice.selectProfile(profile.id);
+  const otherId=(await otherDevice.getSession()).user.id;
+  assert.equal((await otherDevice.listInvoices(otherId)).records[0].invoice.billTo,"Studio Two client");
+  assert.equal((await otherDevice.listProfiles()).find(value=>value.id===profile.id).terms,"Pay within two days.");
+  await otherDevice.selectProfile("default");
 });

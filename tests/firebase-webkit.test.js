@@ -94,6 +94,7 @@ for (const mobile of [false, true]) {
     assert.ok([...listenSessions].some(sid => !retiringSessions.has(sid)), "reload establishes a new Firestore connection");
     assert.equal(await page.locator("#accountEmail").textContent(), email);
     assert.match(await page.locator(".invoice-record").innerText(), /90.00/);
+    await page.locator(".invoice-record .invoice-more summary").click();
     const historyDownloadEvent = page.waitForEvent("download");
     await page.locator("[data-download-invoice-pdf]").click();
     const historyDownload = await historyDownloadEvent;

@@ -25,6 +25,53 @@ service firebase.storage {
       allow update, list: if false;
       allow delete: if owns(uid);
     }
+    match /users/{uid}/invoices/{invoiceId}/attachments/{fileId} {
+      function invoiceExists() {
+        return firestore.exists(/databases/(default)/documents/users/$(uid)/invoices/$(invoiceId));
+      }
+      allow read: if owns(uid) && invoiceExists();
+      allow create: if owns(uid) && invoiceExists() && resource == null
+        && request.resource.size > 0 && request.resource.size <= 20 * 1024 * 1024
+        && request.resource.contentType == 'application/octet-stream'
+        && request.resource.metadata.fileName is string
+        && request.resource.metadata.fileName.size() <= 180;
+      allow update: if false;
+      allow delete: if owns(uid);
+    }
+    match /users/{uid}/profiles/{profileId}/invoices/{invoiceId}/revisions/{fileName} {
+      function invoiceExists() {
+        return firestore.exists(/databases/(default)/documents/users/$(uid)/profiles/$(profileId)/invoices/$(invoiceId));
+      }
+      function currentRevision() {
+        let revision = firestore.get(/databases/(default)/documents/users/$(uid)/profiles/$(profileId)/invoices/$(invoiceId)).data.revision;
+        return fileName == string(revision) + '.pdf'
+          && request.resource.metadata.invoiceId == invoiceId
+          && request.resource.metadata.revision == string(revision)
+          && request.resource.metadata.invoiceFingerprint.matches('^[a-f0-9]{64}$');
+      }
+      // Firestore deletion revokes file access. Retained objects can be cleaned
+      // up separately without making an invoice deletion depend on two services.
+      allow get: if owns(uid) && fileName.matches('^[1-9][0-9]*[.]pdf$') && invoiceExists();
+      allow create: if resource == null && owns(uid) && invoiceExists() && currentRevision()
+        && request.resource.contentType == 'application/pdf'
+        && request.resource.size >= 5 && request.resource.size <= 10 * 1024 * 1024;
+      // Stored revisions are immutable; retries reuse the existing object.
+      allow update, list: if false;
+      allow delete: if owns(uid);
+    }
+    match /users/{uid}/profiles/{profileId}/invoices/{invoiceId}/attachments/{fileId} {
+      function invoiceExists() {
+        return firestore.exists(/databases/(default)/documents/users/$(uid)/profiles/$(profileId)/invoices/$(invoiceId));
+      }
+      allow read: if owns(uid) && invoiceExists();
+      allow create: if owns(uid) && invoiceExists() && resource == null
+        && request.resource.size > 0 && request.resource.size <= 20 * 1024 * 1024
+        && request.resource.contentType == 'application/octet-stream'
+        && request.resource.metadata.fileName is string
+        && request.resource.metadata.fileName.size() <= 180;
+      allow update: if false;
+      allow delete: if owns(uid);
+    }
     match /{path=**} {
       allow read, write: if false;
     }

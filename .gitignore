@@ -14,3 +14,6 @@ firebase-config.local.json
 .firebase/
 *-debug.log*
 .env*
+
+# Local UI review screenshots and generated mockups
+output/

@@ -9,11 +9,11 @@ import {
 } from "firebase/auth";
 import {
   initializeFirestore, memoryLocalCache, collection, doc, getDocFromServer,
-  getDocsFromServer, getCountFromServer, query, orderBy, documentId,
+  getDocsFromServer, getCountFromServer, setDoc, query, orderBy, documentId,
   limit, startAfter, runTransaction, serverTimestamp, Timestamp,
   connectFirestoreEmulator, terminate,
 } from "firebase/firestore";
-import { getStorage, ref as storageRef, uploadBytes, getBlob, getMetadata, connectStorageEmulator } from "firebase/storage";
+import { getStorage, ref as storageRef, uploadBytes, getBlob, getMetadata, connectStorageEmulator, listAll, deleteObject } from "firebase/storage";
 
 const copy = (value) => JSON.parse(JSON.stringify(value));
 const failure = (code, message) => Object.assign(new Error(message), { code });
@@ -32,7 +32,7 @@ function cleanInvoice(invoice) {
     throw new Error("An invoice must contain between one and five items.");
   }
   const value = copy(invoice);
-  if (new TextEncoder().encode(JSON.stringify(value)).length > 50000) throw new Error("This invoice is too large to save.");
+  if (new TextEncoder().encode(JSON.stringify(value)).length > 180000) throw new Error("This invoice is too large to save.");
   return value;
 }
 
@@ -99,7 +99,15 @@ export function createFirebaseInvoiceBackend(config, localBackend, options = {})
   }
 
   const listeners = new Set();
-  const session = () => auth.currentUser ? { user: { id: auth.currentUser.uid, email: auth.currentUser.email } } : null;
+  const selectedProfile = () => {
+    try { return environment?.sessionStorage?.getItem(`quotini-profile:${auth.currentUser?.uid}`) || "default"; } catch { return "default"; }
+  };
+  const workspaceId = () => selectedProfile() === "default" ? auth.currentUser?.uid : `${auth.currentUser?.uid}::${selectedProfile()}`;
+  const scope = (uid) => {
+    owner(uid);
+    return selectedProfile() === "default" ? ["users", auth.currentUser.uid] : ["users", auth.currentUser.uid, "profiles", validId(selectedProfile())];
+  };
+  const session = () => auth.currentUser ? { user: { id: workspaceId(), email: auth.currentUser.email } } : null;
   let lastUid;
   let initial = true;
   let resetCode;
@@ -111,8 +119,8 @@ export function createFirebaseInvoiceBackend(config, localBackend, options = {})
     if (changed) for (const listener of listeners) listener(event, session());
   });
 
-  function owner(userId = auth.currentUser?.uid) {
-    if (!userId || auth.currentUser?.uid !== userId) throw failure("auth/user-token-expired", "Sign in again to access your invoices.");
+  function owner(userId = workspaceId()) {
+    if (!userId || workspaceId() !== userId) throw failure("auth/user-token-expired", "Sign in again to access your invoices.");
     return userId;
   }
 
@@ -121,10 +129,10 @@ export function createFirebaseInvoiceBackend(config, localBackend, options = {})
     if (environment?.navigator?.onLine === false) throw failure("unavailable", "Reconnect to save invoices to your account. Your draft remains on this device.");
   }
 
-  const invoices = (uid) => collection(db, "users", owner(uid), "invoices");
+  const invoices = (uid) => collection(db, ...scope(uid), "invoices");
   const invoiceRef = (uid, id) => doc(invoices(uid), validId(id));
-  const draftRef = (uid) => doc(db, "users", owner(uid), "drafts", "current");
-  const sequenceRef = (uid, date) => doc(db, "users", owner(uid), "sequences", date);
+  const draftRef = (uid) => doc(db, ...scope(uid), "drafts", "current");
+  const sequenceRef = (uid, date) => doc(db, ...scope(uid), "sequences", date);
   function checkRevision(existing, expected, kind) {
     const current = existing && !existing.deleted ? existing.revision : undefined;
     if (current !== expected && !(current === undefined && (expected === undefined || expected === 0))) throw conflict(kind);
@@ -144,6 +152,129 @@ export function createFirebaseInvoiceBackend(config, localBackend, options = {})
     }
   }
 
+  const paymentRef = (uid, id) => doc(db, ...scope(uid), "payments", validId(id));
+  const evidenceRef = (uid, id) => doc(paymentRef(uid, id), "evidence", "current");
+  async function loadPayment(uid, id) {
+    online(uid);
+    const [payment, evidence] = await Promise.all([getDocFromServer(paymentRef(uid, id)), getDocFromServer(evidenceRef(uid, id))]);
+    owner(uid);
+    return { status: "unpaid", remarks: "", ...payment.data(), screenshot: evidence.data()?.screenshot || "" };
+  }
+  async function savePayment(uid, id, value) {
+    online(uid);
+    if (!["unpaid", "paid", "refunded"].includes(value.status) || typeof value.remarks !== "string" || value.remarks.length > 2000) throw new Error("Choose a valid status and keep remarks within 2,000 characters.");
+    if (value.status !== "unpaid" && (!value.confirmed || !/^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(value.screenshot) || value.screenshot.length > 700000)) throw new Error("Upload a payment screenshot and confirm you have checked it.");
+    return runTransaction(db, async (transaction) => {
+      online(uid);
+      const invoice = await transaction.get(invoiceRef(uid, id));
+      const previous = (await transaction.get(paymentRef(uid, id))).data();
+      if (!invoice.exists()) throw new Error("This invoice no longer exists.");
+      checkRevision(previous, value.revision, "payment");
+      const revision = (previous?.revision || 0) + 1;
+      const payment = { status: value.status, remarks: value.remarks, revision, updatedAt: serverTimestamp(), verified: value.status !== "unpaid" };
+      transaction.set(paymentRef(uid, id), payment);
+      if (payment.verified) transaction.set(evidenceRef(uid, id), { screenshot: value.screenshot, revision, status: value.status });
+      else transaction.delete(evidenceRef(uid, id));
+      return { ...payment, updatedAt: null };
+    });
+  }
+
+  const folderRef = (uid, id) => doc(db, ...scope(uid), "folders", validId(id));
+  const placementRef = (uid, id) => doc(db, ...scope(uid), "invoiceFolders", validId(id));
+  async function loadFolders(uid) {
+    online(uid);
+    const [folders, placements] = await Promise.all([
+      getDocsFromServer(collection(db, ...scope(uid), "folders")),
+      getDocsFromServer(collection(db, ...scope(uid), "invoiceFolders")),
+    ]);
+    owner(uid);
+    return { folders: folders.docs.map(entry => ({ id: entry.id, ...entry.data() })), placements: placements.docs.map(entry => ({ id: entry.id, ...entry.data() })) };
+  }
+  async function createFolder(uid, name, parentId = "", id = crypto.randomUUID()) {
+    online(uid);
+    name = String(name).trim();
+    if (!name || name.length > 80) throw new Error("Enter a folder name between 1 and 80 characters.");
+    if (parentId) validId(parentId);
+    return runTransaction(db, async transaction => {
+      online(uid);
+      const ref = folderRef(uid, id);
+      const existing = await transaction.get(ref);
+      const parent = parentId ? await transaction.get(folderRef(uid, parentId)) : null;
+      if (parent && !parent.exists()) throw new Error("The parent folder no longer exists.");
+      if (existing.exists()) {
+        if (existing.data().name !== name || existing.data().parentId !== parentId) throw new Error("A different folder already uses this identifier.");
+        return { id, name, parentId };
+      }
+      if (id === parentId) throw new Error("A folder cannot contain itself.");
+      transaction.set(ref, { name, parentId });
+      return { id, name, parentId };
+    });
+  }
+  async function moveInvoice(uid, id, folderId, expectedFolderId) {
+    online(uid);
+    if (folderId) validId(folderId);
+    return runTransaction(db, async transaction => {
+      online(uid);
+      const invoice = await transaction.get(invoiceRef(uid, id));
+      const previous = await transaction.get(placementRef(uid, id));
+      const folder = folderId ? await transaction.get(folderRef(uid, folderId)) : null;
+      if (!invoice.exists()) throw new Error("This invoice no longer exists.");
+      if (folder && !folder.exists()) throw new Error("This folder no longer exists.");
+      if (expectedFolderId !== undefined && (previous.data()?.folderId || "") !== expectedFolderId) throw new Error("This invoice was moved on another device. Refresh and try again.");
+      if (folderId) transaction.set(placementRef(uid, id), { folderId });
+      else transaction.delete(placementRef(uid, id));
+    });
+  }
+
+  async function ensureBookingFolders(uid) {
+    const root = await createFolder(uid, "Eng Hoon Residences", "", "eng-hoon-residences");
+    await createFolder(uid, "Weekend Market", root.id, "eng-hoon-weekend-market");
+    await createFolder(uid, "Events", root.id, "eng-hoon-events");
+    return root;
+  }
+  async function createBookingFolders(uid, category, date) {
+    if (!["weekend-market", "events"].includes(category) || !/^\d{4}-\d{2}-\d{2}$/.test(date) || new Date(`${date}T12:00:00Z`).toISOString().slice(0, 10) !== date) throw new Error("Choose a category and a valid date.");
+    await ensureBookingFolders(uid);
+    const parentId = `eng-hoon-${category}`;
+    const folder = await createFolder(uid, date, parentId, `${parentId}-${date}`);
+    await createFolder(uid, "Furniture rental", folder.id, `${folder.id}-furniture`);
+    return folder;
+  }
+  function attachmentRoot(uid, invoiceId) {
+    if (!storage) throw new Error("File storage is unavailable.");
+    return storageRef(storage, `${scope(uid).join("/")}/invoices/${validId(invoiceId)}/attachments`);
+  }
+  async function listAttachments(uid, invoiceId) {
+    online(uid);
+    const result = await listAll(attachmentRoot(uid, invoiceId));
+    const files = await Promise.all(result.items.map(async ref => {
+      const metadata = await getMetadata(ref);
+      return { id: ref.name, name: metadata.customMetadata?.fileName || ref.name, size: metadata.size };
+    }));
+    owner(uid);
+    return files.sort((a, b) => a.name.localeCompare(b.name));
+  }
+  async function uploadAttachment(uid, invoiceId, file) {
+    online(uid);
+    if (!file || file.size < 1 || file.size > 20 * 1024 * 1024) throw new Error("Choose a non-empty file up to 20 MB.");
+    const ref = storageRef(attachmentRoot(uid, invoiceId), crypto.randomUUID());
+    const fileName = String(file.name || "attachment").replace(/[\/\\\x00-\x1f]/g, "_").slice(0, 180);
+    await uploadBytes(ref, file, { contentType: "application/octet-stream", customMetadata: { fileName } });
+    owner(uid);
+    return { id: ref.name, name: fileName, size: file.size };
+  }
+  async function downloadAttachment(uid, invoiceId, id) {
+    online(uid);
+    const blob = await getBlob(storageRef(attachmentRoot(uid, invoiceId), validId(id)), 20 * 1024 * 1024);
+    owner(uid);
+    return blob;
+  }
+  async function deleteAttachment(uid, invoiceId, id) {
+    online(uid);
+    await deleteObject(storageRef(attachmentRoot(uid, invoiceId), validId(id)));
+    owner(uid);
+  }
+
   async function listInvoices(userId, options = {}) {
     online(userId);
     const pageSize = Math.min(50, Math.max(1, Number(options.limit) || 25));
@@ -155,14 +286,21 @@ export function createFirebaseInvoiceBackend(config, localBackend, options = {})
       ? [startAfter(new Timestamp(cursor.timestamp.seconds, cursor.timestamp.nanoseconds), validId(cursor.id))] : [];
     let documents;
     let total;
-    if (search) {
+    const status = options.status || "all";
+    const [payments, organization] = await Promise.all([
+      getDocsFromServer(collection(db, ...scope(userId), "payments")), loadFolders(userId),
+    ]);
+    const folderMap = new Map(organization.placements.map(entry => [entry.id, entry.folderId]));
+    const folderFilter = typeof options.folderId === "string";
+    const paymentMap = new Map(payments.docs.map((entry) => [entry.id, entry.data()]));
+    if (search || status !== "all" || folderFilter) {
       // Preserve the editor's substring search semantics. Firestore has no native
       // substring index; only this user's collection is scanned for a search.
       const snapshot = await getDocsFromServer(query(source, ...ordering));
       owner(userId);
       const matching = snapshot.docs.filter((entry) => {
         const invoice = entry.data().invoice;
-        return `${invoice.invoiceNumber || ""} ${invoice.billTo || ""}`.toLocaleLowerCase("en-SG").includes(search);
+        return `${invoice.invoiceNumber || ""} ${invoice.billTo || ""} ${invoice.igHandle || ""}`.toLocaleLowerCase("en-SG").includes(search) && (status === "all" || (paymentMap.get(entry.id)?.status || "unpaid") === status) && (!folderFilter || (folderMap.get(entry.id) || "") === options.folderId);
       });
       total = matching.length;
       const position = cursor?.id ? matching.findIndex((entry) => entry.id === cursor.id) : -1;
@@ -180,7 +318,8 @@ export function createFirebaseInvoiceBackend(config, localBackend, options = {})
     const last = page.at(-1);
     const timestamp = last?.data().updatedAt;
     return {
-      records: page.map((entry) => asRecord(entry.data())), total,
+      folders: organization.folders,
+      records: page.map((entry) => ({ ...asRecord(entry.data()), folderId: folderMap.get(entry.id) || "", payment: paymentMap.get(entry.id) || { status: "unpaid", remarks: "" } })), total,
       nextCursor: documents.length > pageSize && last ? {
         id: last.id, timestamp: { seconds: timestamp.seconds, nanoseconds: timestamp.nanoseconds },
       } : null,
@@ -196,6 +335,9 @@ export function createFirebaseInvoiceBackend(config, localBackend, options = {})
       online(userId);
       const existing = (await transaction.get(ref)).data();
       const sequence = numbering ? await transaction.get(sequenceRef(userId, numbering.date)) : null;
+      const destinationId = !existing && record.folderId ? validId(record.folderId) : "";
+      const destination = destinationId ? await transaction.get(folderRef(userId, destinationId)) : null;
+      if (destination && !destination.exists()) throw new Error("This folder no longer exists.");
       checkRevision(existing, record.revision, "invoice");
       const now = Timestamp.now();
       const revision = (existing?.revision || 0) + 1;
@@ -210,6 +352,7 @@ export function createFirebaseInvoiceBackend(config, localBackend, options = {})
         invoice: { ...invoice, historyRevision: revision },
       };
       transaction.set(ref, { ...saved, createdAt: existing?.createdAt || importedCreatedAt || serverTimestamp(), updatedAt: serverTimestamp() });
+      if (destinationId) transaction.set(placementRef(userId, record.id), { folderId: destinationId });
       if (numbering && numbering.sequence > (sequence?.data()?.sequence || 0)) {
         transaction.set(sequenceRef(userId, numbering.date), { sequence: numbering.sequence });
       }
@@ -226,6 +369,9 @@ export function createFirebaseInvoiceBackend(config, localBackend, options = {})
       if (!existing) return false;
       checkRevision(existing, expectedRevision, "invoice");
       transaction.delete(ref);
+      transaction.delete(placementRef(userId, id));
+      transaction.delete(paymentRef(userId, id));
+      transaction.delete(evidenceRef(userId, id));
       return true;
     });
   }
@@ -244,7 +390,7 @@ export function createFirebaseInvoiceBackend(config, localBackend, options = {})
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonicalInvoice(saved.invoice)));
     const fingerprint = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
     owner(uid);
-    return { target: storageRef(storage, `users/${uid}/invoices/${record.id}/revisions/${record.revision}.pdf`), fingerprint };
+    return { target: storageRef(storage, `${scope(uid).join("/")}/invoices/${record.id}/revisions/${record.revision}.pdf`), fingerprint };
   }
 
   function checkPdfFingerprint(metadata, fingerprint) {
@@ -348,7 +494,7 @@ export function createFirebaseInvoiceBackend(config, localBackend, options = {})
     });
   }
 
-  async function migrateLocalData(uid, records, draft, sequences = []) {
+  async function migrateLocalData(uid, records, draft, sequences = [], payments = [], organization = {}) {
     online(uid);
     const prepared = (records || []).map((record) => ({ ...record, id: validId(record.id), invoice: cleanInvoice(record.invoice) }));
     const localDraft = draft ? cleanInvoice(draft) : null;
@@ -388,10 +534,55 @@ export function createFirebaseInvoiceBackend(config, localBackend, options = {})
       if (saved && canonicalInvoice(saved.invoice) !== canonicalInvoice(localDraft)) throw new Error("Your account already has a draft. The invoices have been imported and the local copy is preserved. Review the account draft before importing the local draft.");
       if (!saved) await writeDraft(uid, localDraft, undefined, undefined);
     }
+    for (const payment of payments) {
+      if (!prepared.some((record) => record.id === payment.id)) throw new Error("Payment backup does not match an imported invoice.");
+      const current = await loadPayment(uid, payment.id);
+      if (current.revision) {
+        if (current.status !== payment.status || current.remarks !== payment.remarks || current.screenshot !== (payment.screenshot || "")) throw new Error("Payment details already exist. Existing evidence was preserved.");
+      } else await savePayment(uid, payment.id, { ...payment, revision: undefined, confirmed: payment.status !== "unpaid" });
+    }
+    const remaining = [...(organization.folders || [])];
+    const restored = new Set([""]);
+    while (remaining.length) {
+      const index = remaining.findIndex(folder => restored.has(folder.parentId));
+      if (index < 0) throw new Error("The backup contains an invalid folder hierarchy.");
+      const [folder] = remaining.splice(index, 1);
+      await createFolder(uid, folder.name, folder.parentId, folder.id);
+      restored.add(folder.id);
+    }
+    const existingPlacements = new Map((await loadFolders(uid)).placements.map(entry => [entry.id, entry.folderId]));
+    for (const entry of organization.placements || []) {
+      if (!prepared.some(record => record.id === entry.id)) throw new Error("Folder placement does not match an imported invoice.");
+      const previous = existingPlacements.get(entry.id) || "";
+      if (previous && previous !== entry.folderId) throw new Error("An invoice already belongs to another folder. Its location was preserved.");
+      await moveInvoice(uid, entry.id, entry.folderId, previous);
+    }
     return { imported: prepared.length };
   }
 
   return {
+    async listProfiles() {
+      owner();
+      const snapshot = await getDocsFromServer(collection(db, "users", auth.currentUser.uid, "profiles"));
+      const profiles = snapshot.docs.map(entry => ({ id: entry.id, ...entry.data() }));
+      if (!profiles.some(profile => profile.id === "default")) profiles.unshift({ id: "default", name: "My business", logo: "", terms: null });
+      return profiles;
+    },
+    activeProfileId: selectedProfile,
+    async saveProfile(profile) {
+      owner();
+      const id = profile.id || crypto.randomUUID();
+      const name = String(profile.name || "").trim();
+      if (!name || name.length > 80) throw new Error("Enter a profile name up to 80 characters.");
+      const value = { name, logo: profile.logo || "", terms: profile.terms ?? "" };
+      await setDoc(doc(db, "users", auth.currentUser.uid, "profiles", validId(id)), value);
+      return { id, ...value };
+    },
+    async selectProfile(id) {
+      const profiles = await this.listProfiles();
+      if (!profiles.some(profile => profile.id === id)) throw new Error("This profile is unavailable.");
+      environment.sessionStorage.setItem(`quotini-profile:${auth.currentUser.uid}`, id);
+    },
     configured: true, guestMode: false, localMode: false, provider: "firebase",
     async getSession() { await auth.authStateReady(); return session(); },
     onAuthStateChange(callback) { listeners.add(callback); return { unsubscribe: () => listeners.delete(callback) }; },
@@ -427,7 +618,7 @@ export function createFirebaseInvoiceBackend(config, localBackend, options = {})
       else { owner(); await updatePassword(auth.currentUser, password); }
     },
     signOut: () => signOut(auth),
-    listInvoices, saveInvoice, deleteInvoice, loadDraft,
+    listInvoices, saveInvoice, deleteInvoice, loadDraft, loadPayment, savePayment, loadFolders, createFolder, moveInvoice, ensureBookingFolders, createBookingFolders, listAttachments, uploadAttachment, downloadAttachment, deleteAttachment,
     pdfStorageAvailable, saveInvoicePdf, loadInvoicePdf,
     saveDraft: writeDraft,
     deleteDraft: (uid, signal, revision) => writeDraft(uid, null, signal, revision),
@@ -438,10 +629,10 @@ export function createFirebaseInvoiceBackend(config, localBackend, options = {})
       online(uid);
       const [history, draft, sequences] = await Promise.all([
         getDocsFromServer(invoices(uid)), loadDraft(uid),
-        getDocsFromServer(collection(db, "users", uid, "sequences")),
+        getDocsFromServer(collection(db, ...scope(uid), "sequences")),
       ]);
       owner(uid);
-      return { version: 1, exportedAt: new Date().toISOString(), source: "Ledgerly Firebase account", history: history.docs.map((entry) => asRecord(entry.data())), draft: draft?.invoice || null, draftRevision: draft?.revision || null,
+      return { version: 1, exportedAt: new Date().toISOString(), source: "Quotini business profile", profile: (await this.listProfiles()).find(profile => profile.id === selectedProfile()), organization: await loadFolders(uid), payments: await Promise.all(history.docs.map(async (entry) => ({ id: entry.id, ...await loadPayment(uid, entry.id) }))), history: history.docs.map((entry) => asRecord(entry.data())), draft: draft?.invoice || null, draftRevision: draft?.revision || null,
         sequences: sequences.docs.map((entry) => ({ date: entry.id, sequence: entry.data().sequence })) };
     },
     exportLocalData: localBackend?.exportLocalData,

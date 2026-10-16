@@ -1,5 +1,5 @@
 {
-  "name": "invoice-studio",
+  "name": "quotini",
   "version": "1.0.0",
   "private": true,
   "packageManager": "npm@11.17.0",
@@ -29,5 +29,9 @@
     "esbuild": "0.28.2",
     "firebase-tools": "15.30.0",
     "playwright-core": "1.62.1"
+  },
+  "overrides": {
+    "@grpc/grpc-js": "1.14.6",
+    "dompurify": "3.4.17"
   }
 }

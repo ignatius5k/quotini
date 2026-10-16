@@ -28,7 +28,7 @@ const runId = randomUUID();
 const password = "Pdf-emulator-test-123!";
 const email = `pdf-${runId}@example.test`;
 const config = { apiKey: "fake-emulator-key", projectId, appId: "pdf-storage-test", authDomain: `${projectId}.firebaseapp.com`, storageBucket: bucket };
-const source = "%PDF-1.7\nLedgerly emulator PDF bytes\n%%EOF\n";
+const source = "%PDF-1.7\nQuotini emulator PDF bytes\n%%EOF\n";
 const pdf = () => new Blob([source], { type: "application/pdf" });
 const invoice = () => ({
   invoiceNumber: "PDF-STORAGE-TEST", invoiceDate: "2026-09-17", dueDate: "2026-09-24",
@@ -42,6 +42,8 @@ let bob;
 let uid;
 let bobUid;
 function client(name, webConfig = config, environment) {
+  const selected = new Map();
+  environment = { ...environment, sessionStorage: { getItem: key => selected.get(key), setItem: (key, value) => selected.set(key, value) } };
   const backend = createFirebaseInvoiceBackend(webConfig, null, {
     appName: `pdf-${name}-${runId}`, memoryAuth: true, emulators: ports, environment,
   });
@@ -198,4 +200,46 @@ test("a fresh browser session downloads PDF bytes through authenticated getBlob"
     return result;
   })()`);
   assert.deepEqual(result, { uploaded: pathOf(record), text: source, size: pdf().size, type: "application/pdf", signedOutError: "auth/user-token-expired" });
+});
+
+test("private invoice attachments upload, list, download, delete and revoke on invoice deletion", async () => {
+  const record = await savedInvoice('attachments');
+  const file = new File(['Sample furniture list'], 'furniture.csv', {type:'text/csv'});
+  const uploaded = await alice.uploadAttachment(uid, record.id, file);
+  const listed = await alice.listAttachments(uid, record.id);
+  assert.equal(listed[0].name, 'furniture.csv');
+  const path = `users/${uid}/invoices/${record.id}/attachments/${uploaded.id}`;
+  const ownerFile = ref(rules.authenticatedContext(uid).storage(bucket), path);
+  assert.equal(new TextDecoder().decode(await getBytes(ownerFile)), 'Sample furniture list');
+  await assertFails(getBytes(ref(rules.authenticatedContext(bobUid).storage(bucket), path)));
+  await assertFails(listAll(ref(rules.authenticatedContext(bobUid).storage(bucket), `users/${uid}/invoices/${record.id}/attachments`)));
+  await assert.rejects(alice.uploadAttachment(uid, record.id, new File([], 'empty.txt')));
+  await alice.deleteAttachment(uid, record.id, uploaded.id);
+  assert.equal((await alice.listAttachments(uid, record.id)).length, 0);
+  const retained = await alice.uploadAttachment(uid, record.id, file);
+  await alice.deleteInvoice(uid, record.id, record.revision);
+  await assertFails(getBytes(ref(rules.authenticatedContext(uid).storage(bucket), `users/${uid}/invoices/${record.id}/attachments/${retained.id}`)));
+});
+
+
+test("profile PDF and attachments use isolated paths and deny other accounts", async () => {
+  const profile=await alice.saveProfile({name:"Storage profile",terms:"",logo:""});
+  await alice.selectProfile(profile.id);
+  const profileUid=(await alice.getSession()).user.id;
+  const record=await alice.saveInvoice(profileUid,{id:"scoped-storage",invoice:invoice()});
+  const stored=await alice.saveInvoicePdf(profileUid,record,pdf());
+  assert.ok(stored.path.startsWith(`users/${uid}/profiles/${profile.id}/`));
+  const owned=ref(rules.authenticatedContext(uid).storage(bucket),stored.path);
+  assert.equal(Buffer.from(await getBytes(owned)).toString(),source);
+  await assertFails(getBytes(ref(rules.authenticatedContext(bobUid).storage(bucket),stored.path)));
+  const file=await alice.uploadAttachment(profileUid,record.id,new File(["private"],"profile.txt",{type:"text/plain"}));
+  assert.equal((await alice.listAttachments(profileUid,record.id)).length,1);
+  await alice.selectProfile("default");
+  await assert.rejects(alice.listAttachments(profileUid,record.id));
+  assert.equal((await alice.listInvoices(uid)).records.some(entry=>entry.id===record.id),false);
+  await alice.selectProfile(profile.id);
+  await alice.deleteAttachment(profileUid,record.id,file.id);
+  await alice.deleteInvoice(profileUid,record.id,record.revision);
+  await assertFails(getBytes(owned));
+  await alice.selectProfile("default");
 });

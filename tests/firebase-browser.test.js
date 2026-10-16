@@ -79,8 +79,12 @@ for (const width of [1440, 390]) {
 
     await screenshot("history");
     await read("document.querySelector('#exportDataButton').click(); true");
-    const backupName = await waitFor(async () => (await readdir(profile)).find(name => /^ledgerly-account-backup-.*[.]json$/.test(name)), 15000);
-    const exported = JSON.parse(await readFile(join(profile, backupName), "utf8"));
+    const backupName = await waitFor(async () => (await readdir(profile)).find(name => /^quotini-account-backup-.*[.]json$/.test(name)), 15000);
+    let exported;
+    await waitFor(async () => {
+      try { exported = JSON.parse(await readFile(join(profile, backupName), "utf8")); return true; }
+      catch (error) { if (error instanceof SyntaxError || error.code === "ENOENT") return false; throw error; }
+    }, 15000);
     assert.equal(exported.history.length, 4);
     assert.equal(exported.draft.invoiceNumber, "DEMO-DRAFT");
     assert.deepEqual(exported.history.find(record => record.id === 'demo-invoice-3').invoice.items, backup.history[2].invoice.items);
@@ -596,4 +600,149 @@ test("sign-out cancels late local PDF download and print even when cloud PDF sto
   await until("window.localPdfReady && window.privatePrintTarget.closed");
   assert.equal(await read("window.privatePrintTarget.replacements"), 0);
   assert.deepEqual(exceptions, []);
+});
+
+test("payment panel saves evidence and remarks and filters across reloads", { timeout: 90000 }, async (context) => {
+  const { read, until, page } = await launchFirebaseBrowser(context);
+  await read(`document.querySelector('#authEmail').value='payment-${Date.now()}@example.test'; document.querySelector('#authPassword').value='Browser-test-123!'; document.querySelector('#createAccountButton').click(); true`);
+  await until("!document.querySelector('#invoiceListPage').hidden");
+  await read(`(async () => {
+    const uid = (await window.invoiceBackend.getSession()).user.id;
+    await window.invoiceBackend.saveInvoice(uid, {id:'payment-ui', invoice:{invoiceNumber:'PAYMENT-UI',billTo:'Payment Test',invoiceDate:'2026-10-02',dueDate:'2026-10-09',items:[{id:'item',quantity:1,description:'Booking',price:100}]}});
+    await loadInvoiceHistory({reset:true});
+  })()`);
+  await read("document.querySelector('.invoice-record-actions').querySelectorAll('button'); openPayment(invoiceHistory[0]); true");
+  await until("document.querySelector('#paymentDialog').open && !document.querySelector('#paymentSave').disabled");
+  await read("document.querySelector('#paymentStatus').value='paid'; document.querySelector('#paymentStatus').dispatchEvent(new Event('change')); document.querySelector('#paymentSave').click(); true");
+  await until("document.querySelector('#paymentError').textContent.includes('screenshot')");
+  await read(`(() => {const canvas=document.createElement('canvas');canvas.width=200;canvas.height=100;canvas.getContext('2d').fillText('Payment 100',10,30);canvas.toBlob(blob=>{const transfer=new DataTransfer();transfer.items.add(new File([blob],'proof.png',{type:'image/png'}));document.querySelector('#paymentScreenshot').files=transfer.files;document.querySelector('#paymentScreenshot').dispatchEvent(new Event('change'));});})()`);
+  await until("!document.querySelector('#paymentPreview').hidden && !document.querySelector('#paymentSave').disabled");
+  await read("document.querySelector('#paymentRemarks').value='Transfer reference 123'; document.querySelector('#paymentConfirmed').checked=true; document.querySelector('#paymentSave').click(); true");
+  await until("!document.querySelector('#paymentDialog').open && document.querySelector('#invoiceHistoryList').textContent.includes('Paid')");
+  await page.send('Page.reload');
+  await until("document.querySelector('#invoiceHistoryList')?.textContent.includes('Paid')");
+  await read("openPayment(invoiceHistory[0]); true");
+  await until("document.querySelector('#paymentRemarks').value === 'Transfer reference 123' && !document.querySelector('#paymentSave').disabled");
+  await read("document.querySelector('#paymentCancel').click(); true");
+  await read("document.querySelector('#paymentFilter').value='unpaid'; document.querySelector('#paymentFilter').dispatchEvent(new Event('change')); true");
+  await until("!historyLoading && document.querySelectorAll('.invoice-record').length===0");
+});
+
+test("folders UI creates nested folders and moves invoices with reload persistence", { timeout: 90000 }, async context => {
+  const { read, until, page, exceptions } = await launchFirebaseBrowser(context);
+  await read(`document.querySelector('#authEmail').value='folders-ui-${Date.now()}@example.test'; document.querySelector('#authPassword').value='Browser-test-123!'; document.querySelector('#createAccountButton').click(); true`);
+  await until("!document.querySelector('#invoiceListPage').hidden");
+  await read(`(async () => {const uid=(await window.invoiceBackend.getSession()).user.id; await window.invoiceBackend.saveInvoice(uid,{id:'folder-ui',invoice:{invoiceNumber:'FOLDER-UI',billTo:'Folder customer',invoiceDate:'2026-10-14',dueDate:'2026-10-21',items:[{id:'one',quantity:1,description:'Rental',price:100}]}}); await loadInvoiceHistory({reset:true});})()`);
+  const create = async name => {
+    await read(`document.querySelector('#newFolderButton').click(); document.querySelector('#folderName').value=${JSON.stringify(name)}; document.querySelector('#folderSave').click(); true`);
+    await until(`!document.querySelector('#folderDialog').open && !historyLoading && invoiceFolders.some(folder=>folder.name===${JSON.stringify(name)})`);
+  };
+  await create('Properties');
+  await read("[...document.querySelectorAll('.folder-tile')].find(button=>button.textContent.includes('Properties')).click(); true");
+  await until("!historyLoading && document.querySelector('#folderBreadcrumbs [aria-current]').textContent==='Properties'");
+  await create('Eng Hoon');
+  await read("document.querySelector('#folderBreadcrumbs button').click(); true");
+  await until("!historyLoading && document.querySelector('.invoice-record')");
+  await read("document.querySelector('.invoice-more summary').click(); [...document.querySelectorAll('.invoice-more-menu button')].find(button=>button.textContent==='Move to folder').click(); true");
+  await until("document.querySelector('#folderDialog').open");
+  await read("document.querySelector('#folderDestination').value=invoiceFolders.find(folder=>folder.name==='Eng Hoon').id; document.querySelector('#folderSave').click(); true");
+  await until("!document.querySelector('#folderDialog').open && !historyLoading");
+  await page.send('Page.reload');
+  await until("!document.querySelector('#invoiceListPage').hidden && invoiceFolders.some(folder => folder.name==='Eng Hoon')");
+  await read("navigateFolder(invoiceFolders.find(folder=>folder.name==='Eng Hoon').id); true");
+  await until("!historyLoading && invoiceHistory.length===1 && document.querySelector('#folderBreadcrumbs').textContent.includes('Properties')");
+  assert.equal(await read("invoiceHistory[0].id"), 'folder-ui');
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  assert.equal(await read("document.documentElement.scrollWidth > innerWidth"), false);
+  assert.deepEqual(exceptions, []);
+});
+
+test("custom logo, terms, Instagram, two-day defaults, generic folders and attachments work together", { timeout: 90000 }, async context => {
+  const { read, until, page, exceptions } = await launchFirebaseBrowser(context);
+  await page.send("Emulation.setDeviceMetricsOverride", { width:1440, height:1000, deviceScaleFactor:1, mobile:false });
+  await read(`document.querySelector('#authEmail').value='complete-${Date.now()}@example.test'; document.querySelector('#authPassword').value='Browser-test-123!'; document.querySelector('#createAccountButton').click(); true`);
+  await until("!document.querySelector('#invoiceListPage').hidden");
+  assert.equal(await read("invoiceFolders.length"), 0, "new accounts must not receive business-specific folders");
+  await read("document.querySelector('#newFolderButton').click(); document.querySelector('#folderName').value='Client projects'; document.querySelector('#folderSave').click(); true");
+  await until("!historyLoading && invoiceFolders.some(folder=>folder.name==='Client projects')");
+  await read("navigateFolder(invoiceFolders.find(folder=>folder.name==='Client projects').id); true");
+  await until("!historyLoading && currentFolderId!==null");
+  await read("document.querySelector('#newInvoiceButton').click(); true");
+  await until("!document.querySelector('#editorPage').hidden");
+  assert.equal(await read("state.invoiceDate===isoDate(new Date()) && state.dueDate===isoDate(new Date(new Date().getFullYear(),new Date().getMonth(),new Date().getDate()+2))"), true);
+  await read(`(() => {
+    for (const [id,value] of Object.entries({billTo:'Coffee Company',igHandle:'coffee.sg',terms:'Payment due within two days. Please quote the invoice number.'})) {const input=document.getElementById(id);input.value=value;input.dispatchEvent(new Event('input',{bubbles:true}));}
+    const description=document.querySelector('[data-item-field="description"]');description.value='Furniture rental';description.dispatchEvent(new Event('input',{bubbles:true}));
+    const price=document.querySelector('[data-item-field="price"]');price.value='150';price.dispatchEvent(new Event('input',{bubbles:true}));
+    document.querySelector('.invoice-customization').open=true;
+    const canvas=document.createElement('canvas');canvas.width=600;canvas.height=530;const ctx=canvas.getContext('2d');ctx.fillStyle='#143d67';ctx.fillRect(0,0,600,530);ctx.fillStyle='white';ctx.fillText('EH EVENTS',20,40);
+    canvas.toBlob(blob=>{const transfer=new DataTransfer();transfer.items.add(new File([blob],'logo.png',{type:'image/png'}));document.querySelector('#invoiceLogoUpload').files=transfer.files;document.querySelector('#invoiceLogoUpload').dispatchEvent(new Event('change'));});
+  })()`);
+  await until("state.logo.startsWith('data:image/png') && document.querySelector('#invoiceAppearanceError').textContent.includes('updated')");
+  const acceptedLogo = await read("state.logo");
+  await read(`(() => {const canvas=document.createElement('canvas');canvas.width=160;canvas.height=80;canvas.toBlob(blob=>{const transfer=new DataTransfer();transfer.items.add(new File([blob],'wrong-size.png',{type:'image/png'}));document.querySelector('#invoiceLogoUpload').files=transfer.files;document.querySelector('#invoiceLogoUpload').dispatchEvent(new Event('change'));});})()`);
+  await until("document.querySelector('#invoiceAppearanceError').textContent.includes('exactly 600 × 530')");
+  assert.equal(await read("state.logo"), acceptedLogo, "invalid-size upload must preserve the accepted logo");
+  assert.equal(await read("document.querySelector('#previewBillTo').textContent"),'COFFEE COMPANY (@coffee.sg)');
+  assert.equal(await read("document.querySelector('#previewTerms').textContent"),'Payment due within two days. Please quote the invoice number.');
+  await read("document.querySelector('#printButton').click(); true");
+  await until("document.querySelector('#cloudPdfStatus').dataset.state==='saved' && !document.querySelector('#savePdfButton').disabled");
+  await read("document.querySelector('#cancelOutputDialogButton').click(); document.querySelector('#invoiceListButton').click(); true");
+  await until("!document.querySelector('#invoiceListPage').hidden && invoiceHistory.length===1");
+  await read("openAttachments(invoiceHistory[0]); true");
+  await until("!document.querySelector('#invoiceAttachments').disabled");
+  await read(`const transfer=new DataTransfer();transfer.items.add(new File(['chairs,12'],'furniture.csv',{type:'text/csv'}));document.querySelector('#invoiceAttachments').files=transfer.files;document.querySelector('#invoiceAttachments').dispatchEvent(new Event('change')); true`);
+  await until("document.querySelector('#attachmentsList').textContent.includes('furniture.csv') && !document.querySelector('#invoiceAttachments').disabled");
+  assert.equal(await read("(async()=>{const files=await backend.listAttachments(currentUser.id,invoiceHistory[0].id);return (await backend.downloadAttachment(currentUser.id,invoiceHistory[0].id,files[0].id)).text();})()"),'chairs,12');
+  await read("document.querySelector('#attachmentsClose').click(); true");
+  await page.send('Page.reload');
+  await until("!document.querySelector('#invoiceListPage').hidden && document.querySelector('.invoice-record')");
+  await read("document.querySelector('[data-edit-invoice]').click(); true");
+  await until("!document.querySelector('#editorPage').hidden");
+  assert.equal(await read("document.querySelector('#igHandle').value"),'coffee.sg');
+  assert.equal(await read("document.querySelector('.invoice-logo').src.startsWith('data:image/png')"),true);
+  assert.equal(await read("document.querySelector('#terms').value"),'Payment due within two days. Please quote the invoice number.');
+  const directory = join(__dirname, '../output/complete-features'); await mkdir(directory,{recursive:true});
+  await read("document.querySelector('.invoice-customization').open=true; window.scrollTo(0,0); true");
+  await writeFile(join(directory,'editor-desktop.png'),Buffer.from((await page.send('Page.captureScreenshot',{format:'png'})).data,'base64'));
+  await page.send("Emulation.setDeviceMetricsOverride", { width:390,height:844,deviceScaleFactor:1,mobile:true });
+  assert.equal(await read("document.documentElement.scrollWidth>innerWidth"),false);
+  await writeFile(join(directory,'editor-mobile.png'),Buffer.from((await page.send('Page.captureScreenshot',{format:'png'})).data,'base64'));
+  await read("document.querySelector('#resetInvoiceLogo').click(); document.querySelector('#resetInvoiceTerms').click(); true");
+  assert.equal(await read("state.logo==='' && state.terms===DEFAULT_INVOICE_TERMS"),true);
+  assert.deepEqual(exceptions,[]);
+});
+
+test("business profile switcher preserves drafts and applies independent invoice defaults", { timeout: 90000 }, async context => {
+  const {read,until,page,exceptions}=await launchFirebaseBrowser(context);
+  await read(`document.querySelector('#authEmail').value='profiles-${Date.now()}@example.test';document.querySelector('#authPassword').value='Browser-test-123!';document.querySelector('#createAccountButton').click();true`);
+  await until("!document.querySelector('#invoiceListPage').hidden");
+  await read("document.querySelector('#newInvoiceButton').click();true");
+  await until("!document.querySelector('#editorPage').hidden");
+  await read("document.querySelector('#billTo').value='Original profile draft';document.querySelector('#billTo').dispatchEvent(new Event('input',{bubbles:true}));true");
+  await read("document.querySelector('#newProfileButton').click();document.querySelector('#profileName').value='Design Studio';document.querySelector('#profileTerms').value='Payment within 14 days.';document.querySelector('#profileSave').click();true");
+  await until("!document.querySelector('#invoiceListPage').hidden && document.querySelector('#profileSelect option:checked')?.textContent==='Design Studio'");
+  assert.equal(await read("invoiceHistory.length"),0);
+  await read("document.querySelector('#newInvoiceButton').click();true");
+  await until("!document.querySelector('#editorPage').hidden");
+  assert.equal(await read("state.terms"),'Payment within 14 days.');
+  assert.equal(await read("state.billTo"),'');
+  await read("document.querySelector('#billTo').value='Design profile draft';document.querySelector('#billTo').dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('#profileSelect').value='default';document.querySelector('#profileSelect').dispatchEvent(new Event('change'));true");
+  await until("!document.querySelector('#invoiceListPage').hidden && document.querySelector('#profileSelect').value==='default'");
+  await until("state.billTo==='ORIGINAL PROFILE DRAFT'");
+  await read("document.querySelector('#profileSelect').value=[...document.querySelector('#profileSelect').options].find(option=>option.textContent==='Design Studio').value;document.querySelector('#profileSelect').dispatchEvent(new Event('change'));true");
+  await until("!document.querySelector('#invoiceListPage').hidden && state.billTo==='DESIGN PROFILE DRAFT'");
+  await read("document.querySelector('#editProfileButton').click();true");
+  await until("!document.querySelector('#settingsPage').hidden");
+  assert.equal(await read("document.querySelector('#editProfileButton').getAttribute('aria-current')"), "page");
+  await read("document.querySelector('#profileTerms').value='Updated profile terms';document.querySelector('#profileSave').click();true");
+  await until("document.querySelector('#profileError').textContent==='Changes saved.'");
+  assert.equal(await read("state.terms"),"Payment within 14 days.","settings must not rewrite an existing draft");
+  assert.equal(await read("(async()=> (await backend.listProfiles()).find(profile=>profile.id===backend.activeProfileId()).terms)()"),"Updated profile terms");
+  await read("document.querySelector('#invoiceListButton').click();true");
+  assert.equal(await read("document.querySelector('#settingsPage').hidden"),true);
+
+  await page.send("Emulation.setDeviceMetricsOverride",{width:390,height:844,deviceScaleFactor:1,mobile:true});
+  assert.equal(await read("document.documentElement.scrollWidth>innerWidth"),false);
+  assert.deepEqual(exceptions,[]);
 });

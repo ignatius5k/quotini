@@ -10,19 +10,31 @@ service cloud.firestore {
     function item(value, draft) {
       let quantity = value.quantity;
       let price = value.price;
+      let description = value.description;
+      let id = value.id;
       return value is map
         && value.keys().hasOnly(['id', 'quantity', 'description', 'price'])
-        && text(value.id, 160) && text(value.description, 1000)
-        && (draft || value.description.size() > 0)
-        && ((draft && quantity == '') || (quantity is number
-          && (draft || (quantity is int && quantity >= 1)) && quantity >= -999999 && quantity <= 9999))
+        && id is string && id.size() <= 160
+        && description is string && description.size() <= 1000
+        && (draft || description.size() > 0)
+        && (draft
+          ? (quantity == '' || (quantity is number && quantity >= -999999 && quantity <= 9999))
+          : (quantity is int && quantity >= 1 && quantity <= 9999))
         && ((draft && price == '') || (price is number && price >= -999999999.99 && price <= 999999999.99));
     }
     function invoice(value, draft) {
       let items = value.items;
       let count = items.size();
+      let handle = value.get('igHandle', '');
+      let terms = value.get('terms', '');
+      let logo = value.get('logo', '');
       return value is map
-        && value.keys().hasOnly(['historyId', 'historyRevision', 'draftDirty', 'invoiceNumber', 'pdfFileName', 'pdfFileNameCustomized', 'invoiceDate', 'dueDate', 'billTo', 'items'])
+        && value.keys().hasOnly(['historyId', 'historyRevision', 'draftDirty', 'invoiceNumber', 'pdfFileName', 'pdfFileNameCustomized', 'invoiceDate', 'dueDate', 'billTo', 'items', 'igHandle', 'terms', 'logo'])
+        && handle is string && handle.size() <= 31
+        && (handle == '' || handle.matches('^@?[A-Za-z0-9_.]{1,30}$'))
+        && terms is string && terms.size() <= 1000
+        && logo is string && logo.size() <= 120000
+        && (logo == '' || logo.matches('^data:image/(png|jpeg);base64,[A-Za-z0-9+/=]+$'))
         && text(value.invoiceNumber, 120) && text(value.billTo, 2000)
         && text(value.invoiceDate, 10) && text(value.dueDate, 10)
         && (draft || (value.invoiceNumber.size() > 0 && value.billTo.size() > 0
@@ -56,6 +68,54 @@ service cloud.firestore {
         && request.resource.data.createdAt == resource.data.createdAt && validRecord();
       allow delete: if owns(uid);
     }
+    match /users/{uid}/folders/{id} {
+      allow read: if owns(uid);
+      allow create: if owns(uid)
+        && request.resource.data.keys().hasOnly(['name', 'parentId'])
+        && text(request.resource.data.name, 80) && request.resource.data.name.size() > 0
+        && text(request.resource.data.parentId, 160) && request.resource.data.parentId != id
+        && (request.resource.data.parentId == '' || exists(/databases/$(database)/documents/users/$(uid)/folders/$(request.resource.data.parentId)));
+      // Immutable parent links prevent cycles and preserve nested paths.
+      allow update, delete: if false;
+    }
+    match /users/{uid}/invoiceFolders/{id} {
+      allow read: if owns(uid);
+      allow create, update: if owns(uid)
+        && request.resource.data.keys().hasOnly(['folderId'])
+        && text(request.resource.data.folderId, 160)
+        && existsAfter(/databases/$(database)/documents/users/$(uid)/invoices/$(id))
+        && exists(/databases/$(database)/documents/users/$(uid)/folders/$(request.resource.data.folderId));
+      allow delete: if owns(uid);
+    }
+    match /users/{uid}/payments/{id} {
+      function parentExists() {
+        return exists(/databases/$(database)/documents/users/$(uid)/invoices/$(id));
+      }
+      function validPayment() {
+        let v = request.resource.data;
+        let proof = getAfter(/databases/$(database)/documents/users/$(uid)/payments/$(id)/evidence/current).data;
+        return v.keys().hasOnly(['status', 'remarks', 'revision', 'updatedAt', 'verified'])
+          && v.status in ['unpaid', 'paid', 'refunded'] && text(v.remarks, 2000)
+          && v.revision is int && v.updatedAt == request.time
+          && v.verified == (v.status != 'unpaid')
+          && (v.status == 'unpaid' || (proof.revision == v.revision && proof.status == v.status));
+      }
+      allow read: if owns(uid);
+      allow create: if owns(uid) && parentExists() && validPayment() && request.resource.data.revision == 1;
+      allow update: if owns(uid) && parentExists() && validPayment() && request.resource.data.revision == resource.data.revision + 1;
+      allow delete: if owns(uid);
+      match /evidence/current {
+        allow read: if owns(uid);
+        allow create, update: if owns(uid) && parentExists()
+          && request.resource.data.keys().hasOnly(['screenshot', 'revision', 'status'])
+          && text(request.resource.data.screenshot, 700000)
+          && request.resource.data.screenshot.matches('^data:image/jpeg;base64,[A-Za-z0-9+/=]+$')
+          && request.resource.data.revision == getAfter(/databases/$(database)/documents/users/$(uid)/payments/$(id)).data.revision
+          && request.resource.data.status == getAfter(/databases/$(database)/documents/users/$(uid)/payments/$(id)).data.status;
+        allow delete: if owns(uid) && (!existsAfter(/databases/$(database)/documents/users/$(uid)/payments/$(id))
+          || getAfter(/databases/$(database)/documents/users/$(uid)/payments/$(id)).data.status == 'unpaid');
+      }
+    }
     match /users/{uid}/drafts/current {
       function validDraft() {
         let value = request.resource.data;
@@ -71,6 +131,106 @@ service cloud.firestore {
       allow delete: if false;
     }
     match /users/{uid}/sequences/{date} {
+      function validSequence() {
+        return date.matches('^[0-9]{8}$')
+          && request.resource.data.keys().hasOnly(['sequence'])
+          && request.resource.data.sequence is int
+          && request.resource.data.sequence >= 1 && request.resource.data.sequence <= 999999;
+      }
+      allow read: if owns(uid);
+      allow create: if owns(uid) && validSequence();
+      allow update: if owns(uid) && validSequence() && request.resource.data.sequence > resource.data.sequence;
+      allow delete: if false;
+    }
+    match /users/{uid}/profiles/{profileId} {
+      allow read: if owns(uid);
+      allow create, update: if owns(uid)
+        && request.resource.data.keys().hasOnly(['name', 'logo', 'terms'])
+        && text(request.resource.data.name, 80) && request.resource.data.name.size() > 0
+        && text(request.resource.data.logo, 120000)
+        && (request.resource.data.logo == '' || request.resource.data.logo.matches('^data:image/(png|jpeg);base64,[A-Za-z0-9+/=]+$'))
+        && text(request.resource.data.terms, 1000);
+      allow delete: if false;
+    }
+    match /users/{uid}/profiles/{profileId}/invoices/{id} {
+      function validRecord() {
+        let value = request.resource.data;
+        return value.keys().hasOnly(['id', 'revision', 'createdAt', 'updatedAt', 'invoice'])
+          && text(value.id, 160) && value.id == id
+          && value.revision is int && value.revision > 0
+          && value.createdAt is timestamp && value.createdAt <= request.time
+          && value.updatedAt == request.time
+          && invoice(value.invoice, false) && value.invoice.historyId == id && value.invoice.draftDirty == false;
+      }
+      allow read: if owns(uid);
+      allow create: if owns(uid) && validRecord() && request.resource.data.revision == 1;
+      allow update: if owns(uid) && request.resource.data.revision == resource.data.revision + 1
+        && request.resource.data.createdAt == resource.data.createdAt && validRecord();
+      allow delete: if owns(uid);
+    }
+    match /users/{uid}/profiles/{profileId}/folders/{id} {
+      allow read: if owns(uid);
+      allow create: if owns(uid)
+        && request.resource.data.keys().hasOnly(['name', 'parentId'])
+        && text(request.resource.data.name, 80) && request.resource.data.name.size() > 0
+        && text(request.resource.data.parentId, 160) && request.resource.data.parentId != id
+        && (request.resource.data.parentId == '' || exists(/databases/$(database)/documents/users/$(uid)/profiles/$(profileId)/folders/$(request.resource.data.parentId)));
+      // Immutable parent links prevent cycles and preserve nested paths.
+      allow update, delete: if false;
+    }
+    match /users/{uid}/profiles/{profileId}/invoiceFolders/{id} {
+      allow read: if owns(uid);
+      allow create, update: if owns(uid)
+        && request.resource.data.keys().hasOnly(['folderId'])
+        && text(request.resource.data.folderId, 160)
+        && existsAfter(/databases/$(database)/documents/users/$(uid)/profiles/$(profileId)/invoices/$(id))
+        && exists(/databases/$(database)/documents/users/$(uid)/profiles/$(profileId)/folders/$(request.resource.data.folderId));
+      allow delete: if owns(uid);
+    }
+    match /users/{uid}/profiles/{profileId}/payments/{id} {
+      function parentExists() {
+        return exists(/databases/$(database)/documents/users/$(uid)/profiles/$(profileId)/invoices/$(id));
+      }
+      function validPayment() {
+        let v = request.resource.data;
+        let proof = getAfter(/databases/$(database)/documents/users/$(uid)/profiles/$(profileId)/payments/$(id)/evidence/current).data;
+        return v.keys().hasOnly(['status', 'remarks', 'revision', 'updatedAt', 'verified'])
+          && v.status in ['unpaid', 'paid', 'refunded'] && text(v.remarks, 2000)
+          && v.revision is int && v.updatedAt == request.time
+          && v.verified == (v.status != 'unpaid')
+          && (v.status == 'unpaid' || (proof.revision == v.revision && proof.status == v.status));
+      }
+      allow read: if owns(uid);
+      allow create: if owns(uid) && parentExists() && validPayment() && request.resource.data.revision == 1;
+      allow update: if owns(uid) && parentExists() && validPayment() && request.resource.data.revision == resource.data.revision + 1;
+      allow delete: if owns(uid);
+      match /evidence/current {
+        allow read: if owns(uid);
+        allow create, update: if owns(uid) && parentExists()
+          && request.resource.data.keys().hasOnly(['screenshot', 'revision', 'status'])
+          && text(request.resource.data.screenshot, 700000)
+          && request.resource.data.screenshot.matches('^data:image/jpeg;base64,[A-Za-z0-9+/=]+$')
+          && request.resource.data.revision == getAfter(/databases/$(database)/documents/users/$(uid)/profiles/$(profileId)/payments/$(id)).data.revision
+          && request.resource.data.status == getAfter(/databases/$(database)/documents/users/$(uid)/profiles/$(profileId)/payments/$(id)).data.status;
+        allow delete: if owns(uid) && (!existsAfter(/databases/$(database)/documents/users/$(uid)/profiles/$(profileId)/payments/$(id))
+          || getAfter(/databases/$(database)/documents/users/$(uid)/profiles/$(profileId)/payments/$(id)).data.status == 'unpaid');
+      }
+    }
+    match /users/{uid}/profiles/{profileId}/drafts/current {
+      function validDraft() {
+        let value = request.resource.data;
+        return value.keys().hasOnly(['invoice', 'revision', 'deleted', 'updatedAt'])
+          && value.revision is int && value.revision > 0
+          && value.updatedAt == request.time && value.deleted is bool
+          && ((value.deleted && value.invoice == null) || (!value.deleted && invoice(value.invoice, true)));
+      }
+      allow read: if owns(uid);
+      allow create: if owns(uid) && validDraft() && request.resource.data.revision == 1;
+      allow update: if owns(uid) && validDraft() && request.resource.data.revision == resource.data.revision + 1;
+      // Deletions are revisioned tombstones, preventing stale offline writes.
+      allow delete: if false;
+    }
+    match /users/{uid}/profiles/{profileId}/sequences/{date} {
       function validSequence() {
         return date.matches('^[0-9]{8}$')
           && request.resource.data.keys().hasOnly(['sequence'])

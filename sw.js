@@ -1,22 +1,22 @@
 const CACHE_PREFIX = "invoice-studio-";
-const CACHE_NAME = `${CACHE_PREFIX}v64`;
+const CACHE_NAME = `${CACHE_PREFIX}v79`;
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./styles.css?v=64",
-  "./redesign.css?v=64",
-  "./firebase-config.js?v=64",
-  "./vendor/firebase-client.js?v=64",
-  "./backend.js?v=64",
-  "./outbox.js?v=64",
-  "./app.js?v=64",
-  "./manifest.webmanifest?v=64",
-  "./ledgerly-mark.png?v=64",
-  "./eng-hoon-residences-logo.png?v=64",
-  "./icon-192.png?v=64",
-  "./icon-512.png?v=64"
+  "./styles.css?v=79",
+  "./redesign.css?v=79",
+  "./firebase-config.js?v=79",
+  "./vendor/firebase-client.js?v=79",
+  "./backend.js?v=79",
+  "./outbox.js?v=79",
+  "./app.js?v=79",
+  "./manifest.webmanifest?v=79",
+  "./ledgerly-mark.png?v=79",
+  "./eng-hoon-residences-logo.png?v=79",
+  "./icon-192.png?v=79",
+  "./icon-512.png?v=79"
 ];
-const RUNTIME_ASSETS = ["./vendor/html2pdf.bundle.min.js?v=32"];
+const RUNTIME_ASSETS = ["./vendor/html2pdf.bundle.min.js?v=33"];
 
 function appUrl(relativePath) {
   return new URL(relativePath, self.registration.scope).href;

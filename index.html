@@ -4,22 +4,22 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#f2f3f5" />
-    <meta name="description" content="Create, save, edit, and duplicate print-ready Eng Hoon Residences invoices." />
+    <meta name="description" content="Create, organise, and manage invoices with Quotini." />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://accounts.google.com/gsi/ https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firestore.googleapis.com https://firebasestorage.googleapis.com; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style; script-src 'self' https://apis.google.com https://accounts.google.com/gsi/client; frame-src 'self' https://*.firebaseapp.com https://accounts.google.com/gsi/; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'" />
-    <link rel="manifest" href="./manifest.webmanifest?v=64" />
-    <link rel="icon" href="./icon-192.png?v=64" />
-    <link rel="apple-touch-icon" href="./icon-192.png?v=64" />
-    <link rel="stylesheet" href="./styles.css?v=64" />
-    <link rel="stylesheet" href="./redesign.css?v=64" />
-    <title>Ledgerly</title>
+    <link rel="manifest" href="./manifest.webmanifest?v=79" />
+    <link rel="icon" href="./icon-192.png?v=79" />
+    <link rel="apple-touch-icon" href="./icon-192.png?v=79" />
+    <link rel="stylesheet" href="./styles.css?v=79" />
+    <link rel="stylesheet" href="./redesign.css?v=79" />
+    <title>Quotini</title>
   </head>
   <body>
     <a class="skip-link" href="#appMain">Skip to main content</a>
     <div id="appLoadingScreen" class="app-loading-screen" role="status" aria-live="polite">
       <div class="app-loading-mark">
-        <img src="./ledgerly-mark.png?v=64" alt="" width="64" height="64" />
+        <img src="./ledgerly-mark.png?v=79" alt="" width="64" height="64" />
         <div>
-          <strong>Ledgerly</strong>
+          <strong>Quotini</strong>
           <span>Preparing your workspace</span>
         </div>
       </div>
@@ -31,17 +31,23 @@
 
     <header class="app-header">
       <div class="brand-lockup">
-        <img src="./ledgerly-mark.png?v=64" alt="" width="44" height="44" />
+        <img src="./ledgerly-mark.png?v=79" alt="" width="44" height="44" />
         <div>
-          <p class="brand-name">Ledgerly</p>
+          <p class="brand-name">Quotini</p>
         </div>
+      </div>
+      <div id="profileControls" class="profile-controls" hidden>
+        <label for="profileSelect">Business profile</label><select id="profileSelect" aria-label="Business profile"></select>
+        <div><button id="newProfileButton" type="button">+ Add profile</button></div>
       </div>
       <div class="header-actions">
         <button id="updateButton" class="button button-secondary" type="button" hidden>Update ready</button>
         <button id="installButton" class="button button-secondary" type="button" hidden>Install app</button>
         <button id="invoiceListButton" class="button button-secondary" type="button" hidden>Invoices</button>
         <button id="newInvoiceButton" class="button button-secondary" type="button" hidden>New invoice</button>
+        <button id="editProfileButton" class="button button-secondary" type="button" hidden>Settings</button>
         <button id="printButton" class="button button-primary" type="button" hidden>Save invoice</button>
+        <nav id="sidebarFolders" class="sidebar-folders" aria-label="Browse folders" hidden><div class="sidebar-folder-heading">Folders<button id="sidebarNewFolder" type="button" aria-label="Create folder">+</button></div><div id="sidebarFolderTree"></div></nav>
         <div id="accountControls" class="account-controls" hidden>
           <div class="account-identity">
             <span id="accountEmail" class="account-email"></span>
@@ -58,7 +64,7 @@
         <div id="authConfigurationState" hidden>
           <p class="auth-label">Setup required</p>
           <h1 id="configurationTitle">Account connection unavailable</h1>
-          <p>Ledgerly could not connect to its account service.</p>
+          <p>Quotini could not connect to its account service.</p>
           <p class="auth-help">Refresh the app to try again. Your existing local invoices have not been changed.</p>
         </div>
 
@@ -70,7 +76,7 @@
         </div>
 
         <div id="authSignInState">
-          <p class="auth-label">Ledgerly</p>
+          <p class="auth-label">Quotini</p>
           <h1 id="authTitle">Sign in</h1>
           <p class="auth-intro">Access invoices and drafts attached to your account.</p>
           <button id="googleSignInButton" class="button button-secondary auth-google-button" type="button">
@@ -123,7 +129,7 @@
       <section class="auth-card storage-recovery-card">
         <p class="auth-label">Local data needs attention</p>
         <h1 id="storageRecoveryTitle" tabindex="-1">Your invoices have not been changed</h1>
-        <p id="storageRecoveryMessage" class="auth-intro">Ledgerly could not read or write this browser's storage.</p>
+        <p id="storageRecoveryMessage" class="auth-intro">Quotini could not read or write this browser's storage.</p>
         <p id="storageRecoveryDetail" class="auth-help"></p>
         <div class="storage-recovery-actions">
           <button id="recoveryExportButton" class="button button-primary" type="button">Download recovery backup</button>
@@ -139,13 +145,14 @@
       <section class="history-hero">
           <div>
             <h1 id="invoiceListTitle" tabindex="-1">Invoices</h1>
-            <p class="history-intro">Create, edit, and duplicate invoices saved on this device.</p>
           </div>
           <div class="history-hero-actions">
+            <button id="historyNewInvoiceButton" class="button button-primary" type="button">+ New invoice</button>
+            <details class="workspace-tools invoice-more"><summary aria-label="Workspace tools">•••</summary><div class="invoice-more-menu">
             <button id="refreshInvoicesButton" class="button button-secondary" type="button" hidden>Refresh</button>
             <button id="exportDataButton" class="button button-secondary" type="button">Download backup</button>
             <button id="importDataButton" class="button button-secondary" type="button">Restore backup</button>
-            <button id="historyNewInvoiceButton" class="button button-primary" type="button">Create invoice</button>
+            </div></details>
           </div>
       </section>
 
@@ -161,17 +168,29 @@
         </div>
       </aside>
 
+      <section id="folderSection" class="folder-section" aria-label="Invoice folders" hidden>
+        <div class="folder-toolbar">
+          <nav id="folderBreadcrumbs" class="folder-breadcrumbs" aria-label="Folder path"></nav>
+          <div class="folder-toolbar-actions"><button id="newFolderButton" class="button button-secondary" type="button">+ New folder</button></div>
+        </div>
+        <div id="folderGrid" class="folder-grid"></div>
+      </section>
+
       <section id="historySection" class="history-section" aria-labelledby="savedInvoicesTitle" aria-busy="false">
         <div class="history-section-heading">
           <div>
             <h2 id="savedInvoicesTitle">Saved invoices</h2>
             <p id="invoiceCount" class="history-count" aria-live="polite">0 invoices</p>
           </div>
+          <div class="history-filters">
+        <label id="paymentFilterLabel" hidden>Payment status <select id="paymentFilter"><option value="all">All invoices</option><option value="unpaid">Unpaid</option><option value="paid">Paid</option><option value="refunded">Refunded</option></select></label>
           <div id="invoiceSearchField" class="history-search" hidden>
             <label for="invoiceSearch">Search invoices</label>
             <input id="invoiceSearch" type="search" autocomplete="off" aria-describedby="invoiceSearchHelp" />
             <span id="invoiceSearchHelp" class="visually-hidden">Enter an invoice number or customer name.</span>
           </div>
+        </div>
+
         </div>
 
         <div class="invoice-table-head" aria-hidden="true">
@@ -180,7 +199,7 @@
           <span>Invoice date</span>
           <span>Items</span>
           <span>Total</span>
-          <span>Actions</span>
+          <span>Payment / actions</span>
         </div>
         <div id="invoiceHistoryList" class="invoice-history-list"></div>
 
@@ -207,7 +226,28 @@
         </div>
       </section>
       <p class="history-storage-note">Invoices and drafts exist only in this browser profile. Clearing site data, using private browsing, or changing devices can remove access. Download a backup regularly.</p>
-      <input id="importDataFile" class="visually-hidden" type="file" accept="application/json,.json" tabindex="-1" aria-label="Choose a Ledgerly backup file" />
+      <input id="importDataFile" class="visually-hidden" type="file" accept="application/json,.json" tabindex="-1" aria-label="Choose a Quotini backup file" />
+    </main>
+
+    <main id="settingsPage" class="history-page settings-page" aria-labelledby="settingsTitle" hidden>
+      <header class="history-hero"><div><h1 id="settingsTitle" tabindex="-1">Settings</h1><p class="settings-intro">Manage this business profile and its invoice defaults.</p></div></header>
+      <form id="profileForm" class="settings-form">
+        <section class="settings-section" aria-labelledby="profileDialogTitle">
+          <div class="settings-section-intro"><h2 id="profileDialogTitle">Business profile</h2><p>Keep each business’s invoices, folders, and drafts together.</p></div>
+          <div class="settings-fields"><label for="profileName">Profile name</label><input id="profileName" maxlength="80" required></div>
+        </section>
+        <section class="settings-section" aria-labelledby="templateSettingsTitle">
+          <div class="settings-section-intro"><h2 id="templateSettingsTitle">Invoice defaults</h2><p>Used for new invoices. Existing invoices and drafts keep their saved details.</p></div>
+          <div class="settings-fields">
+            <label for="profileLogoUpload">Invoice logo</label>
+            <div class="settings-logo"><img id="profileLogoPreview" width="100" height="88" alt="Profile invoice logo" hidden><input id="profileLogoUpload" type="file" accept="image/png,image/jpeg,image/webp" aria-describedby="profileLogoHelp"></div>
+            <p id="profileLogoHelp" class="field-help">600 × 530 px. PNG, JPEG or WebP, up to 10 MB.</p>
+            <label for="profileTerms">Terms and conditions</label><textarea id="profileTerms" maxlength="1000" rows="7"></textarea>
+          </div>
+        </section>
+        <p id="profileError" role="status" aria-live="polite"></p>
+        <div class="settings-footer"><button id="profileCancel" class="button button-secondary" type="button">Cancel</button><button id="profileSave" class="button button-primary" type="submit">Save changes</button></div>
+      </form>
     </main>
 
     <main id="editorPage" class="workspace" hidden>
@@ -255,8 +295,20 @@
             <div class="field-stack">
               <label for="billTo">Customer or company name</label>
               <textarea id="billTo" name="billTo" data-field="billTo" rows="2" maxlength="2000" autocapitalize="characters" spellcheck="false" aria-describedby="billToHelp" required></textarea>
-              <p id="billToHelp" class="field-help">This appears in the invoice's BILL TO section.</p>
+              <p id="billToHelp" class="field-help">Shown as COMPANY NAME (IG HANDLE) when a handle is supplied.</p>
             </div>
+            <div class="field-stack"><label for="igHandle">Instagram handle (optional)</label><input id="igHandle" data-field="igHandle" maxlength="31" autocapitalize="none" spellcheck="false" pattern="@?[A-Za-z0-9_.]{1,30}" aria-describedby="igHandleHelp"><p id="igHandleHelp" class="field-help">Enter the username, with or without @.</p>
+            </div>
+          </fieldset>
+
+          <fieldset class="form-section">
+            <legend>Invoice appearance</legend>
+            <details class="invoice-customization">
+              <summary>Logo &amp; terms</summary>
+              <div class="field-stack"><label for="invoiceLogoUpload">Invoice logo</label><input id="invoiceLogoUpload" type="file" accept="image/png,image/jpeg,image/webp"><p class="field-help">Required size: 600 × 530 px. PNG, JPEG or WebP, up to 10 MB. Saved with this invoice.</p><button id="resetInvoiceLogo" type="button" class="button button-secondary">Use default logo</button></div>
+              <div class="field-stack"><label for="terms">Terms &amp; conditions</label><textarea id="terms" data-field="terms" maxlength="1000" rows="6"></textarea><button id="resetInvoiceTerms" type="button" class="button button-secondary">Restore default terms</button></div>
+              <p id="invoiceAppearanceError" role="status" class="field-help"></p>
+            </details>
           </fieldset>
 
           <fieldset class="form-section items-section">
@@ -268,12 +320,14 @@
               <span></span>
             </div>
             <div id="itemsEditor" class="items-editor"></div>
-            <p id="itemFormattingHelp" class="field-help item-formatting-help">
+            <ul class="item-help-list">
+            <li id="itemFormattingHelp" class="field-help item-formatting-help">
               <span class="desktop-formatting-help">Press Enter for a new line. Select item text and press Ctrl+B (Cmd+B on Mac) to bold it.</span>
               <span class="mobile-formatting-help">Select item text, then choose Bold.</span>
-            </p>
-            <p id="itemPriceHelp" class="field-help">Use a negative unit price for a discount or credit. It will be subtracted from the total.</p>
-            <p id="itemLimitHelp" class="field-help item-limit-help">Up to 5 items fit the one-page invoice.</p>
+            </li>
+            <li id="itemPriceHelp" class="field-help">Use a negative unit price for a discount or credit. It will be subtracted from the total.</li>
+            <li id="itemLimitHelp" class="field-help item-limit-help">Up to 5 items fit the one-page invoice.</li>
+            </ul>
             <button id="addItemButton" class="button button-secondary add-item-button" type="button" aria-describedby="itemLimitHelp">Add item</button>
             <div class="editor-total" aria-live="polite" aria-atomic="true">
               <span>Total</span>
@@ -325,7 +379,7 @@
                     </div>
                   </dl>
                 </div>
-                <img class="invoice-logo" src="./eng-hoon-residences-logo.png?v=64" alt="Eng Hoon Residences" width="132" height="117" />
+                <img class="invoice-logo" src="./eng-hoon-residences-logo.png?v=79" alt="Eng Hoon Residences" width="132" height="117" />
               </header>
 
               <section class="billing-grid" aria-label="Billing parties">
@@ -364,8 +418,7 @@
               </table>
 
               <section class="invoice-notes" aria-label="Booking terms">
-                <p>Please note that all payments made for weekend market space bookings are non-refundable upon confirmation, as the space will be reserved exclusively for you.</p>
-                <p>Should you be unable to participate, we may, at our discretion and subject to availability, allow your booking to be transferred to a replacement date or future pop-up event.</p>
+                <p id="previewTerms"></p>
               </section>
 
               <section class="payment-section" aria-label="Payment modes">
@@ -454,12 +507,53 @@
       </div>
     </dialog>
 
+    <dialog id="attachmentsDialog" class="organize-dialog" aria-labelledby="attachmentsTitle">
+      <div class="payment-panel">
+        <header class="payment-heading"><h2 id="attachmentsTitle">Invoice files</h2><p id="attachmentsInvoice" class="payment-hint"></p></header>
+        <label>Upload files<input id="invoiceAttachments" type="file" multiple aria-describedby="attachmentsHint"></label>
+        <p id="attachmentsHint" class="payment-hint">Up to 20 MB per file. Files are private to your account. Download important files separately; JSON backups do not include attachments.</p>
+        <ul id="attachmentsList" class="attachments-list"></ul>
+        <p id="attachmentsError" role="status"></p>
+        <div class="payment-actions"><button id="attachmentsClose" class="button button-secondary" type="button">Done</button></div>
+      </div>
+    </dialog>
+
+    <dialog id="folderDialog" class="organize-dialog" aria-labelledby="folderDialogTitle">
+      <form id="folderForm" class="payment-panel">
+        <header class="payment-heading"><h2 id="folderDialogTitle">New folder</h2><p id="folderDialogContext" class="payment-hint"></p></header>
+        <label id="folderNameField">Folder name<input id="folderName" maxlength="80" autocomplete="off"></label>
+        <label id="folderDestinationField" hidden>Destination<select id="folderDestination"></select></label>
+        <p id="folderError" role="alert"></p>
+        <div class="payment-actions"><button id="folderCancel" class="button button-secondary" type="button">Cancel</button><button id="folderSave" class="button button-primary" type="submit">Create folder</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="paymentDialog" aria-labelledby="paymentTitle">
+      <form id="paymentForm" class="payment-panel">
+        <header class="payment-heading">
+          <h2 id="paymentTitle">Payment &amp; remarks</h2>
+          <p id="paymentInvoiceNumber"></p>
+        </header>
+        <label>Payment status<select id="paymentStatus"><option value="unpaid">Unpaid</option><option value="paid">Paid</option><option value="refunded">Refunded</option></select></label>
+        <label><span>Internal remarks <span class="payment-optional">Optional</span></span><textarea id="paymentRemarks" maxlength="2000" rows="3"></textarea></label>
+        <section id="paymentEvidence" class="payment-evidence" aria-label="Payment evidence" hidden>
+          <label><span id="paymentEvidenceTitle">Payment screenshot</span><input id="paymentScreenshot" type="file" accept="image/png,image/jpeg,image/webp" aria-describedby="paymentFileHint"></label>
+          <p id="paymentFileHint" class="payment-hint">PNG, JPEG or WebP · Up to 10 MB</p>
+          <img id="paymentPreview" alt="Uploaded payment evidence" hidden>
+          <label class="payment-confirm"><input id="paymentConfirmed" type="checkbox"><span>I checked the recipient, amount and transaction details.</span></label>
+          <p class="payment-hint">Confirm against this invoice. This is a manual review, not a bank check.</p>
+        </section>
+        <p id="paymentRemovalHint" class="payment-hint" hidden>Saving as unpaid removes the existing payment evidence.</p>
+        <p id="paymentError" role="alert"></p>
+        <div class="payment-actions"><button id="paymentCancel" class="button button-secondary" type="button">Cancel</button><button id="paymentSave" class="button button-primary" type="submit">Save changes</button></div>
+      </form>
+    </dialog>
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
     <noscript>This app needs JavaScript to create invoices.</noscript>
-    <script src="./firebase-config.js?v=64" defer></script>
-    <script src="./vendor/firebase-client.js?v=64" defer></script>
-    <script src="./backend.js?v=64" defer></script>
-    <script src="./outbox.js?v=64" defer></script>
-    <script src="./app.js?v=64" defer></script>
+    <script src="./firebase-config.js?v=79" defer></script>
+    <script src="./vendor/firebase-client.js?v=79" defer></script>
+    <script src="./backend.js?v=79" defer></script>
+    <script src="./outbox.js?v=79" defer></script>
+    <script src="./app.js?v=79" defer></script>
   </body>
 </html>

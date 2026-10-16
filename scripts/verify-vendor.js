@@ -34,7 +34,7 @@ async function main() {
 
   for (const entry of vendorManifest) {
     const [source, destination] = await Promise.all([
-      readFile(join(ROOT, entry.source)),
+      require("./build-pdf-vendor.js")().then(files => files[entry.destination.split("/").pop()]),
       readFile(join(ROOT, entry.destination)),
     ]);
     const sourceHash = sha256(source);

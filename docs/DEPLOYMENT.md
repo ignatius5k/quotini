@@ -10,13 +10,13 @@ Private Firestore/Storage rules and invoice index exemptions are deployed. Stora
 
 ## GitHub Pages
 
-The public app is at `https://ignatius5k.github.io/ledgerly/`. Pages must use **GitHub Actions** as its publishing source. Publishing the repository root directly serves the unconfigured development files and omits the generated Firebase SDK, leaving the app in device-only mode.
+The public app is at `https://ignatius5k.github.io/quotini/`. Pages must use **GitHub Actions** as its publishing source. Publishing the repository root directly serves the unconfigured development files and omits the generated Firebase SDK, leaving the app in device-only mode.
 
 The `Verify` workflow runs the application and Firebase tests, audit, and build checks. For `main`, it then rebuilds `dist/` using the **FIREBASE_WEB_CONFIG** repository secret, verifies that the Firebase configuration (including `storageBucket`) and bundled SDK are present, and publishes the artifact through the `github-pages` environment. Missing configuration fails the deployment rather than publishing a device-only app. Pull requests and `staging` do not deploy.
 
 Live Pages verification on 18 September 2026 confirmed email registration, Google sign-in, private invoice history, and identical immediate/stored PDF downloads after sign-out and sign-in. See [verification evidence](FIREBASE-VERIFICATION.md).
 
-Set the repository secret to the Firebase public web configuration JSON described below. Never put service account credentials in that secret. The Firebase authorized-domain list and bucket CORS configuration must include `ignatius5k.github.io`. The app uses relative asset paths so it works under `/ledgerly/`. Existing visitors can select **Update ready** after the new service worker arrives; device invoices remain available for the explicit account-import flow.
+Set the repository secret to the Firebase public web configuration JSON described below. Never put service account credentials in that secret. The Firebase authorized-domain list and bucket CORS configuration must include `ignatius5k.github.io`. The app uses relative asset paths so it works under `/quotini/`. Existing visitors can select **Update ready** after the new service worker arrives; device invoices remain available for the explicit account-import flow.
 
 ## Setup
 

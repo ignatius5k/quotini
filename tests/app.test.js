@@ -262,10 +262,10 @@ test("guest entry, invoice editor, responsive layout, draft, print, and offline 
     signOutHidden: true,
     syncStatus: "Saved locally",
     storageNote: "Invoices and drafts exist only in this browser profile. Clearing site data, using private browsing, or changing devices can remove access. Download a backup regularly.",
-    brandName: "Ledgerly",
-    headerLogo: "./ledgerly-mark.png?v=64",
-    invoiceLogo: "./eng-hoon-residences-logo.png?v=64",
-    title: "Invoices | Ledgerly",
+    brandName: "Quotini",
+    headerLogo: "./ledgerly-mark.png?v=79",
+    invoiceLogo: "./eng-hoon-residences-logo.png?v=79",
+    title: "Invoices | Quotini",
   });
 
   await evaluate(page, "localStorage.setItem('invoice-studio-history-v1', '{broken-json'); location.reload(); true");
@@ -688,6 +688,7 @@ test("guest entry, invoice editor, responsive layout, draft, print, and offline 
     }
   }
 
+  await evaluate(page, "window.scrollTo(0, 0); true");
   const desktopToolbarAlignment = JSON.parse(await evaluate(page, `(() => {
     const zoom = document.querySelector('.preview-zoom-controls').getBoundingClientRect();
     const save = document.querySelector('#printButton').getBoundingClientRect();
@@ -1334,7 +1335,7 @@ test("guest entry, invoice editor, responsive layout, draft, print, and offline 
   await waitFor(() => evaluate(page, "typeof window.html2pdf === 'function'"));
   assert.equal(
     await evaluate(page, "document.querySelector('script[data-pdf-library=\"html2pdf\"]')?.getAttribute('src')"),
-    "./vendor/html2pdf.bundle.min.js?v=32",
+    "./vendor/html2pdf.bundle.min.js?v=33",
   );
   await waitFor(async () => {
     try {
@@ -1921,12 +1922,12 @@ test("guest entry, invoice editor, responsive layout, draft, print, and offline 
   assert.deepEqual(runtimeExceptions, [], `Unexpected runtime exceptions:\n${runtimeExceptions.join("\n")}`);
   assert.deepEqual(browserErrors, [], `Unexpected browser errors:\n${browserErrors.join("\n")}`);
 
-  const cacheReady = await waitFor(() => evaluate(page, "caches.keys().then(keys => keys.includes('invoice-studio-v64'))"));
+  const cacheReady = await waitFor(() => evaluate(page, "caches.keys().then(keys => keys.includes('invoice-studio-v79'))"));
   assert.equal(cacheReady, true);
   const workerSource = await readFile(join(ROOT, "sw.js"), "utf8");
   const handlers = {};
   const deletedCaches = [];
-  const cacheKeys = ["invoice-studio-v1", "invoice-studio-v27", "invoice-studio-v28", "invoice-studio-v29", "invoice-studio-v30", "invoice-studio-v31", "invoice-studio-v32", "invoice-studio-v33", "invoice-studio-v34", "invoice-studio-v35", "invoice-studio-v36", "invoice-studio-v37", "invoice-studio-v38", "invoice-studio-v39", "invoice-studio-v40", "invoice-studio-v41", "invoice-studio-v42", "invoice-studio-v43", "invoice-studio-v44", "invoice-studio-v45", "invoice-studio-v46", "invoice-studio-v47", "invoice-studio-v48", "invoice-studio-v49", "invoice-studio-v64", "unrelated-app-cache"];
+  const cacheKeys = ["invoice-studio-v1", "invoice-studio-v27", "invoice-studio-v28", "invoice-studio-v29", "invoice-studio-v30", "invoice-studio-v31", "invoice-studio-v32", "invoice-studio-v33", "invoice-studio-v34", "invoice-studio-v35", "invoice-studio-v36", "invoice-studio-v37", "invoice-studio-v38", "invoice-studio-v39", "invoice-studio-v40", "invoice-studio-v41", "invoice-studio-v42", "invoice-studio-v43", "invoice-studio-v44", "invoice-studio-v45", "invoice-studio-v46", "invoice-studio-v47", "invoice-studio-v48", "invoice-studio-v49", "invoice-studio-v79", "unrelated-app-cache"];
   const workerCache = { match: async () => undefined, put: async () => {} };
   const workerContext = {
     URL,

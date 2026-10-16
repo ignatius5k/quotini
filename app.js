@@ -1,3 +1,6 @@
+var activeBusinessProfile;
+const EMPTY_PROFILE_LOGO = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+const DEFAULT_INVOICE_TERMS = "Please note that all payments made for weekend market space bookings are non-refundable upon confirmation, as the space will be reserved exclusively for you.\n\nShould you be unable to participate, we may, at our discretion and subject to availability, allow your booking to be transferred to a replacement date or future pop-up event.";
 const STORAGE_KEY = "invoice-studio-draft-v1";
 const DRAFT_REVISION_KEY = "invoice-studio-guest-draft-revision-v1";
 const SEQUENCE_KEY = "invoice-studio-sequence-v1";
@@ -12,7 +15,7 @@ const MAX_ITEM_DESCRIPTION_LENGTH = 1000;
 const MAX_BILL_TO_LENGTH = 2000;
 const HISTORY_PAGE_SIZE = 25;
 const DRAFT_RETRY_MAX_DELAY = 30000;
-const PDF_LIBRARY_URL = "./vendor/html2pdf.bundle.min.js?v=32";
+const PDF_LIBRARY_URL = "./vendor/html2pdf.bundle.min.js?v=33";
 const backend = window.invoiceBackend;
 const draftOutbox = window.invoiceDraftOutbox;
 
@@ -82,7 +85,6 @@ const accountControls = document.querySelector("#accountControls");
 const accountEmail = document.querySelector("#accountEmail");
 const syncStatus = document.querySelector("#syncStatus");
 const signOutButton = document.querySelector("#signOutButton");
-const historyIntro = document.querySelector(".history-intro");
 const historyStorageNote = document.querySelector(".history-storage-note");
 const legacyMigrationDialog = document.querySelector("#legacyMigrationDialog");
 const legacyMigrationSummary = document.querySelector("#legacyMigrationSummary");
@@ -121,6 +123,9 @@ let outputDialogTrigger;
 let outputPdfContext;
 let currentPage = "history";
 let historyQuery = "";
+let currentFolderId = null;
+let invoiceFolders = [];
+let folderAction = null;
 let historyNextCursor;
 let historyTotal = 0;
 let historyLoading = false;
@@ -176,6 +181,9 @@ function normalizeInvoiceData(value) {
     invoiceDate: String(value.invoiceDate || ""),
     dueDate: String(value.dueDate || ""),
     billTo: String(value.billTo || "").toLocaleUpperCase("en-SG").slice(0, MAX_BILL_TO_LENGTH),
+    igHandle: String(value.igHandle || "").slice(0, 31),
+    terms: typeof value.terms === "string" ? value.terms.slice(0, 1000) : DEFAULT_INVOICE_TERMS,
+    logo: typeof value.logo === "string" && /^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(value.logo) && value.logo.length <= 120000 ? value.logo : "",
     items: value.items.slice(0, 5).map((item, index) => ({
       id: String(item?.id || `item-${Date.now()}-${index}`).slice(0, 160),
       quantity: normalizeDraftQuantity(item?.quantity),
@@ -298,7 +306,7 @@ function authFailureMessage(error, action) {
     "auth/cancelled-popup-request": "Google sign-in was interrupted. Please try again.",
     "auth/unauthorized-domain": "Google sign-in is not available on this website address yet. Contact the app administrator.",
     "auth/invalid-oauth-client-id": "Google sign-in is not configured correctly. Contact the app administrator.",
-    "auth/operation-not-supported-in-this-environment": "Open Ledgerly in a regular browser to sign in with Google.",
+    "auth/operation-not-supported-in-this-environment": "Open Quotini in a regular browser to sign in with Google.",
     "auth/web-storage-unsupported": "Your browser must allow site storage to sign in with Google. Check your browser settings and try again.",
     "auth/account-exists-with-different-credential": "This email already has an account using another sign-in method. Use that method to access your existing invoices.",
     "auth/invalid-api-key": "The account connection is not configured correctly. Contact the app administrator.",
@@ -342,6 +350,8 @@ function neutralizeDraftWrites() {
   clearTimeout(draftRetryTimer);
   draftSaveVersion += 1;
   sessionEpoch += 1;
+  document.querySelector("#paymentDialog")?.close();
+  document.querySelector("#paymentFilter").value = "all";
   draftPersistenceEnabled = false;
   draftChanged = false;
   draftRevision = undefined;
@@ -372,6 +382,13 @@ function clearSensitiveWorkspace() {
   clearOutputPdfContext();
   setOutputBusy(false);
   invoiceHistory = [];
+  currentFolderId = null;
+  invoiceFolders = [];
+  document.querySelector("#folderDialog")?.close();
+  document.querySelector("#attachmentsDialog")?.close();
+  document.querySelector("#settingsPage").hidden = true;
+  editingBusinessProfile = null;
+  activeBusinessProfile = undefined;
   historyNextCursor = undefined;
   historyTotal = 0;
   historyLoading = false;
@@ -399,6 +416,9 @@ function clearSensitiveWorkspace() {
 }
 
 function hideWorkspace() {
+  document.querySelector("#settingsPage").hidden = true;
+  document.querySelector("#editProfileButton").hidden = true;
+  document.querySelector("#profileControls").hidden = true;
   invoiceListPage.hidden = true;
   editorPage.hidden = true;
   invoiceListButton.hidden = true;
@@ -420,7 +440,7 @@ function showSignedOutPage() {
   passwordRecoveryForm.hidden = true;
   authPage.setAttribute("aria-labelledby", "authTitle");
   document.body.dataset.page = "auth";
-  document.title = "Sign in | Ledgerly";
+  document.title = "Sign in | Quotini";
   setAuthMessage();
   authEmail.focus({ preventScroll: true });
 }
@@ -438,7 +458,7 @@ function showConfigurationPage() {
   passwordRecoveryForm.hidden = true;
   authPage.setAttribute("aria-labelledby", "configurationTitle");
   document.body.dataset.page = "auth";
-  document.title = "Connect account | Ledgerly";
+  document.title = "Connect account | Quotini";
   setAuthMessage(backend?.configurationError || "", "error");
 }
 
@@ -452,7 +472,7 @@ function showPasswordRecoveryPage() {
   passwordRecoveryForm.hidden = false;
   authPage.setAttribute("aria-labelledby", "recoveryTitle");
   document.body.dataset.page = "auth";
-  document.title = "Set a new password | Ledgerly";
+  document.title = "Set a new password | Quotini";
   setAuthMessage();
   recoveryPassword.focus({ preventScroll: true });
 }
@@ -501,7 +521,7 @@ function localBackupData() {
       : {
         version: 1,
         exportedAt: new Date().toISOString(),
-        source: "Eng Hoon Residences Ledgerly browser storage",
+        source: "Quotini browser storage",
         history: legacyExportValue(HISTORY_KEY),
         draft: legacyExportValue(STORAGE_KEY),
         sequence: legacyExportValue(SEQUENCE_KEY),
@@ -511,7 +531,7 @@ function localBackupData() {
     backup = {
       version: 1,
       exportedAt: new Date().toISOString(),
-      source: "Eng Hoon Residences Ledgerly open-tab recovery",
+      source: "Quotini open-tab recovery",
       history: { unavailable: true, message: error.message },
       draft: null,
       draftRevision: null,
@@ -532,7 +552,7 @@ function downloadLocalBackup(options = {}) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `ledgerly-local-backup-${isoDate(new Date())}.json`;
+  link.download = `quotini-local-backup-${isoDate(new Date())}.json`;
   document.body.append(link);
   link.click();
   link.remove();
@@ -561,7 +581,7 @@ async function downloadWorkspaceBackup() {
     const url = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url;
-    link.download = `ledgerly-account-backup-${isoDate(new Date())}.json`;
+    link.download = `quotini-account-backup-${isoDate(new Date())}.json`;
     document.body.append(link);
     link.click();
     link.remove();
@@ -592,10 +612,11 @@ async function restoreBackupFile(event) {
   try {
     const backup = JSON.parse(await file.text());
     if (!backend.guestMode && currentUser) {
-      if (!Array.isArray(backup.history) || (backup.draft && !Array.isArray(backup.draft.items))) throw new Error("Choose a valid Ledgerly backup file.");
-      if (!window.confirm("Import this backup into your signed-in account? Existing invoices will be preserved.")) return;
+      if (!Array.isArray(backup.history) || (backup.draft && !Array.isArray(backup.draft.items))) throw new Error("Choose a valid Quotini backup file.");
+      if (!window.confirm("Import this backup into the current business profile? Existing invoices will be preserved.")) return;
       await persistDraftImmediately();
-      await backend.migrateLocalData(currentUser.id, backup.history, backup.draft, backup.sequences || (backup.sequence ? [backup.sequence] : []));
+      await backend.migrateLocalData(currentUser.id, backup.history, backup.draft, backup.sequences || (backup.sequence ? [backup.sequence] : []), backup.payments || [], backup.organization || {});
+      if (backup.profile && backend.saveProfile) await backend.saveProfile({ ...backup.profile, id: backend.activeProfileId() });
     } else {
       if (typeof backend.restoreLocalData !== "function") throw new Error("Backup restore is unavailable in this build.");
       backend.restoreLocalData(backup);
@@ -621,16 +642,16 @@ function showStorageRecovery(error) {
   invoiceListButton.hidden = true;
   newInvoiceButton.hidden = true;
   printButton.hidden = true;
-  storageRecoveryMessage.textContent = error?.message || "Ledgerly could not access this browser's local storage.";
+  storageRecoveryMessage.textContent = error?.message || "Quotini could not access this browser's local storage.";
   storageRecoveryDetail.textContent = error?.storageKey
     ? `Affected storage area: ${error.storageKey}`
     : "Your existing local data has not been intentionally changed.";
-  document.title = "Local data recovery | Ledgerly";
+  document.title = "Local data recovery | Quotini";
   requestAnimationFrame(() => document.querySelector("#storageRecoveryTitle")?.focus({ preventScroll: true }));
 }
 
 async function clearRecoveryData() {
-  if (!window.confirm("Permanently clear Ledgerly invoices and drafts from this browser? Download a recovery backup first.")) return;
+  if (!window.confirm("Permanently clear Quotini invoices and drafts from this browser? Download a recovery backup first.")) return;
   try {
     if (typeof backend.clearLocalData !== "function") throw new Error("Local data clearing is unavailable in this build.");
     backend.clearLocalData();
@@ -995,10 +1016,11 @@ function setHistoryLoading(isLoading) {
   historySection.setAttribute("aria-busy", String(isLoading));
   historyLoadingState.hidden = !isLoading;
   loadMoreInvoicesButton.disabled = isLoading;
+  document.querySelector("#paymentFilter").disabled = isLoading;
 }
 
 async function loadInvoiceHistory(options = {}) {
-  if (!currentUser || historyLoading) return false;
+  if (!currentUser || (historyLoading && !options.reset)) return false;
   const reset = Boolean(options.reset);
   const requestVersion = reset ? ++historyRequestVersion : historyRequestVersion;
   const cursor = reset ? null : historyNextCursor;
@@ -1017,8 +1039,11 @@ async function loadInvoiceHistory(options = {}) {
       limit: HISTORY_PAGE_SIZE,
       cursor,
       query: historyQuery,
+      status: document.querySelector("#paymentFilter").value,
+      folderId: currentFolderId,
     });
     if (requestVersion !== historyRequestVersion) return false;
+    invoiceFolders = page.folders || [];
     const records = normalizeHistoryRecords(page.records || []);
     const knownIds = new Set(invoiceHistory.map((record) => record.id));
     invoiceHistory = reset
@@ -1060,12 +1085,9 @@ async function loadAuthenticatedWorkspace(session) {
   historyErrorState.querySelector("p").textContent = backend.guestMode
     ? "Invoices could not be loaded from this browser. Download a backup, then check browser storage and try again."
     : "Invoices could not be loaded. Check your connection and try again.";
-  historyIntro.textContent = backend.guestMode
-    ? "Create, edit, and duplicate invoices saved on this device."
-    : "Create, edit, and duplicate invoices synced to your account.";
   historyStorageNote.textContent = backend.guestMode
     ? "Invoices and drafts exist only in this browser profile. Clearing site data, using private browsing, or changing devices can remove access. Download a backup regularly."
-    : "Invoices and synced drafts are saved privately to your account. Sign in on another device to access them. Draft changes made offline stay on this device until synced.";
+    : "Saved privately to your account. Offline changes sync when you reconnect.";
   if (backend.guestMode) setDraftSyncStatus("synced", "Saved locally");
   accountControls.hidden = false;
   storageRecoveryPage.hidden = true;
@@ -1074,6 +1096,16 @@ async function loadAuthenticatedWorkspace(session) {
   setAuthMessage("Loading your invoices...");
 
   try {
+    if (backend.listProfiles) {
+      const profiles = await backend.listProfiles();
+      if (!stillCurrent()) return;
+      activeBusinessProfile = profiles.find(profile => profile.id === backend.activeProfileId());
+      if (!activeBusinessProfile) throw new Error("This business profile is unavailable.");
+      const select = document.querySelector("#profileSelect");
+      select.replaceChildren(...profiles.map(profile => new Option(profile.name, profile.id)));
+      select.value = activeBusinessProfile.id;
+      document.querySelector("#profileControls").hidden = false;
+    }
     const migrationAction = await promptForLegacyMigration(session);
     if (!stillCurrent()) return;
     if (migrationAction === "cancelled") {
@@ -1081,11 +1113,13 @@ async function loadAuthenticatedWorkspace(session) {
       return;
     }
     if (migrationAction === "signed-out") return;
+    if (!stillCurrent()) return;
     const [historyPage, remoteDraftRecord] = await Promise.all([
       backend.listInvoices(uid, { limit: HISTORY_PAGE_SIZE, query: "" }),
       backend.loadDraft(uid),
     ]);
     if (!stillCurrent()) return;
+    invoiceFolders = historyPage.folders || [];
     invoiceHistory = normalizeHistoryRecords(historyPage.records || []);
     historyNextCursor = historyPage.nextCursor || undefined;
     historyTotal = Number.isFinite(Number(historyPage.total)) ? Number(historyPage.total) : invoiceHistory.length;
@@ -1340,7 +1374,7 @@ function normalizeQuantity(value) {
 function createInvoiceDraft(invoiceNumberOverride) {
   const today = new Date();
   const due = new Date(today);
-  due.setDate(due.getDate() + 7);
+  due.setDate(due.getDate() + 2);
   const compactDate = isoDate(today).replace(/-/g, "");
   const invoiceNumber = invoiceNumberOverride || `EHR-${compactDate}-001`;
   return {
@@ -1351,6 +1385,9 @@ function createInvoiceDraft(invoiceNumberOverride) {
     invoiceDate: isoDate(today),
     dueDate: isoDate(due),
     billTo: "",
+    igHandle: "",
+    terms: activeBusinessProfile?.terms ?? DEFAULT_INVOICE_TERMS,
+    logo: activeBusinessProfile?.logo || (activeBusinessProfile && activeBusinessProfile.id !== "default" ? EMPTY_PROFILE_LOGO : ""),
     items: [{ id: `item-${Date.now()}`, quantity: 1, description: "", price: "" }],
   };
 }
@@ -1463,6 +1500,9 @@ function cloneInvoice(invoice) {
     invoiceDate: invoice.invoiceDate,
     dueDate: invoice.dueDate,
     billTo: invoice.billTo,
+    igHandle: invoice.igHandle || "",
+    terms: invoice.terms ?? DEFAULT_INVOICE_TERMS,
+    logo: invoice.logo || "",
     items: invoice.items.map((item) => ({ ...item })),
   };
 }
@@ -1475,6 +1515,9 @@ function invoiceFingerprint(invoice) {
     invoiceDate: invoice.invoiceDate,
     dueDate: invoice.dueDate,
     billTo: invoice.billTo,
+    igHandle: invoice.igHandle || "",
+    terms: invoice.terms ?? DEFAULT_INVOICE_TERMS,
+    logo: invoice.logo || "",
     items: invoice.items.map(({ quantity, description, price }) => ({ quantity, description, price })),
   });
 }
@@ -1523,6 +1566,7 @@ async function saveCurrentInvoiceToHistory() {
     createdAt: existingRecord?.createdAt || now,
     updatedAt: now,
     invoice: savedInvoice,
+    folderId: state.historyId ? undefined : (currentFolderId || ""),
   };
   let remoteRecord;
   try {
@@ -1556,6 +1600,8 @@ async function saveCurrentInvoiceToHistory() {
     // draft deletion, and sign-out remains blocked until it succeeds.
   }
   if (epoch !== sessionEpoch || currentUser?.id !== uid) return false;
+  remoteRecord.payment = existingRecord?.payment;
+  remoteRecord.folderId = existingRecord?.folderId || savedRecord.folderId || "";
   invoiceHistory = [remoteRecord, ...invoiceHistory.filter((record) => record.id !== id)];
   if (!existingRecord) historyTotal += 1;
   historyQuery = "";
@@ -1582,7 +1628,9 @@ function createHistoryMeta(label, value) {
 }
 
 function renderInvoiceHistory() {
-  const query = historyQuery.trim();
+  renderFolders();
+  document.querySelector("#paymentFilterLabel").hidden = !backend.savePayment;
+  const query = historyQuery.trim() || (currentFolderId !== null ? "folder" : "") || (document.querySelector("#paymentFilter").value !== "all" ? "payment filter" : "");
   const visibleRecords = invoiceHistory;
 
   invoiceHistoryList.replaceChildren();
@@ -1600,7 +1648,7 @@ function renderInvoiceHistory() {
     number.textContent = invoice.invoiceNumber || "Untitled invoice";
     article.setAttribute("aria-labelledby", number.id);
     customer.className = "invoice-customer";
-    customer.textContent = invoice.billTo.trim() || "No customer name";
+    customer.textContent = formattedBillTo(invoice) || "No customer name";
     identity.append(number, customer);
 
     const meta = document.createElement("dl");
@@ -1641,7 +1689,50 @@ function renderInvoiceHistory() {
       download.setAttribute("aria-label", `Download saved PDF for invoice ${invoice.invoiceNumber}`);
       actions.append(download);
     }
-    actions.append(duplicate, remove);
+    if (backend.savePayment) {
+      const paymentButton = document.createElement("button");
+      paymentButton.type = "button";
+      paymentButton.className = "button button-secondary";
+      paymentButton.textContent = "Payment & remarks";
+      paymentButton.addEventListener("click", () => openPayment(record));
+      actions.append(paymentButton);
+      const status = record.payment?.status || "unpaid";
+      const badge = document.createElement("span");
+      badge.className = `payment-badge payment-badge-${status}`;
+      badge.textContent = status[0].toUpperCase() + status.slice(1);
+      actions.prepend(badge);
+    }
+    const more = document.createElement("details");
+    more.className = "invoice-more";
+    const summary = document.createElement("summary");
+    summary.textContent = "•••";
+    summary.setAttribute("aria-label", `More actions for invoice ${invoice.invoiceNumber}`);
+    const menu = document.createElement("div");
+    menu.className = "invoice-more-menu";
+    Array.from(actions.querySelectorAll("button")).filter(button => button !== edit).forEach(button => menu.append(button));
+    if (backend.moveInvoice) {
+      const move = document.createElement("button");
+      move.type = "button";
+      move.className = "button button-secondary";
+      move.textContent = "Move to folder";
+      move.addEventListener("click", () => openFolderDialog(record));
+      menu.append(move);
+    }
+    if (backend.uploadAttachment && backend.pdfStorageAvailable) {
+      const files = document.createElement("button");
+      files.type = "button";
+      files.className = "button button-secondary";
+      files.textContent = "Files & uploads";
+      files.addEventListener("click", () => openAttachments(record));
+      menu.append(files);
+    }
+    menu.append(duplicate, remove);
+    menu.addEventListener("click", () => { more.open = false; });
+    more.addEventListener("toggle", () => {
+      if (more.open) document.querySelectorAll(".invoice-more[open]").forEach(other => { if (other !== more) other.open = false; });
+    });
+    more.append(summary, menu);
+    actions.append(more);
 
     article.append(identity, meta, actions);
     invoiceHistoryList.append(article);
@@ -1707,12 +1798,18 @@ async function downloadSavedInvoicePdf(id, button) {
 }
 
 function showEditorPage(mode = "new", focusEditor = true) {
+  document.querySelector("#settingsPage").hidden = true;
+  document.querySelector("#editProfileButton").hidden = !backend.listProfiles;
+  document.querySelector("#editProfileButton").removeAttribute("aria-current");
+  editingBusinessProfile = null;
+  document.querySelector("#profileControls").hidden = !backend.listProfiles;
   editorMode = mode;
   currentPage = "editor";
   document.body.dataset.page = "editor";
   storageRecoveryPage.hidden = true;
   invoiceListPage.hidden = true;
   editorPage.hidden = false;
+  renderFolders();
   invoiceListButton.hidden = false;
   newInvoiceButton.hidden = false;
   printButton.hidden = false;
@@ -1720,7 +1817,7 @@ function showEditorPage(mode = "new", focusEditor = true) {
   if (mode === "new" || mode === "duplicate") newInvoiceButton.setAttribute("aria-current", "page");
   else newInvoiceButton.removeAttribute("aria-current");
   editorTitle.textContent = mode === "edit" ? "Edit invoice" : mode === "duplicate" ? "Review duplicated invoice" : "Create an invoice";
-  document.title = state.invoiceNumber ? `${state.invoiceNumber} | Ledgerly` : "Ledgerly";
+  document.title = state.invoiceNumber ? `${state.invoiceNumber} | Quotini` : "Quotini";
   window.scrollTo({ top: 0 });
   requestAnimationFrame(() => {
     updatePreviewScale();
@@ -1729,6 +1826,11 @@ function showEditorPage(mode = "new", focusEditor = true) {
 }
 
 function showInvoiceList(focusHeading = true) {
+  document.querySelector("#settingsPage").hidden = true;
+  document.querySelector("#editProfileButton").hidden = !backend.listProfiles;
+  document.querySelector("#editProfileButton").removeAttribute("aria-current");
+  editingBusinessProfile = null;
+  document.querySelector("#profileControls").hidden = !backend.listProfiles;
   persistDraftImmediately();
   currentPage = "history";
   document.body.dataset.page = "history";
@@ -1740,7 +1842,7 @@ function showInvoiceList(focusHeading = true) {
   printButton.hidden = true;
   invoiceListButton.setAttribute("aria-current", "page");
   newInvoiceButton.removeAttribute("aria-current");
-  document.title = "Invoices | Ledgerly";
+  document.title = "Invoices | Quotini";
   renderInvoiceHistory();
   window.scrollTo({ top: 0 });
   if (focusHeading) document.querySelector("#invoiceListTitle")?.focus({ preventScroll: true });
@@ -2032,11 +2134,22 @@ function renderItemsEditor() {
   addItemButton.title = isAtItemLimit ? "Maximum of 5 items reached" : "";
 }
 
+function formattedBillTo(invoice) {
+  const name = (invoice.billTo || "").trim();
+  const handle = (invoice.igHandle || "").trim().replace(/^@/, "");
+  return handle ? `${name} (@${handle})` : name;
+}
+
 function renderPreview() {
   setText("#previewInvoiceNumber", state.invoiceNumber || "");
   setText("#previewInvoiceDate", formatDate(state.invoiceDate));
   setText("#previewDueDate", formatDate(state.dueDate));
-  setText("#previewBillTo", state.billTo || "");
+  setText("#previewBillTo", formattedBillTo(state));
+  setText("#previewTerms", state.terms ?? DEFAULT_INVOICE_TERMS);
+  const logo = document.querySelector(".invoice-logo");
+  const source = state.logo || "./eng-hoon-residences-logo.png?v=79";
+  if (logo.getAttribute("src") !== source) logo.src = source;
+  logo.alt = state.logo ? "Invoice logo" : "Eng Hoon Residences";
 
   previewItems.replaceChildren();
   state.items.forEach((item, index) => {
@@ -2241,6 +2354,7 @@ function fieldErrorMessage(input) {
     invoiceDate: "Choose an invoice date.",
     dueDate: "Choose a due date.",
     billTo: "Enter a customer or company name.",
+    igHandle: "Use a username of up to 30 letters, numbers, dots or underscores.",
     quantity: "Enter a whole-number quantity of at least 1.",
     description: "Enter an item description.",
     price: "Enter a price from -$999,999,999.99 to $999,999,999.99.",
@@ -2288,7 +2402,7 @@ function validateForm() {
   form.querySelectorAll('[aria-invalid="true"]').forEach(clearFieldError);
   updateRequiredTextValidity(document.querySelector("#invoiceNumber"));
   updateRequiredTextValidity(document.querySelector("#billTo"));
-  const invalidInputs = [...form.querySelectorAll("[required]")].filter((input) => !input.validity.valid);
+  const invalidInputs = [...form.querySelectorAll("input, textarea, select")].filter((input) => !input.validity.valid);
   const dueDate = document.querySelector("#dueDate");
   if (hasInvalidDateOrder() && !invalidInputs.includes(dueDate)) invalidInputs.push(dueDate);
   invalidInputs.forEach(showFieldError);
@@ -2323,7 +2437,7 @@ function invoiceIsReady(action) {
     return false;
   }
   if (invoiceSheet.scrollHeight > PAPER_HEIGHT + 2 || invoiceSheet.scrollWidth > PAPER_WIDTH + 2) {
-    showToast("This invoice is too long for the one-page template. Shorten an item or remove a row.");
+    showToast("This invoice is too long for the one-page template. Shorten the terms or an item, or remove a row.");
     return false;
   }
   state.invoiceNumber = state.invoiceNumber.trim();
@@ -2486,12 +2600,12 @@ function addSearchablePdfText(pdf, invoice = state) {
     `Invoice Date: ${formatDate(invoice.invoiceDate)}`,
     `Invoice Due Date: ${formatDate(invoice.dueDate)}`,
     "BILL FROM: TIONG BAHRU SERVICED APARTMENTS PTE LTD, UEN 201420098R",
-    `BILL TO: ${pdfSearchText(invoice.billTo)}`,
+    `BILL TO: ${pdfSearchText(formattedBillTo(invoice))}`,
     ...invoice.items.map((item, index) => (
       `${index + 1}. ${pdfSearchText(stripBoldMarkers(item.description))} - SGD ${formatAmount(Number(item.quantity) * Number(item.price))}`
     )),
     `TOTAL: SGD ${formatAmount(invoice.items.reduce((total, item) => total + Number(item.quantity) * Number(item.price), 0))}`,
-    "Payments for weekend market space bookings are non-refundable upon confirmation.",
+    pdfSearchText(invoice.terms ?? DEFAULT_INVOICE_TERMS),
     "PAYNOW: TIONG BAHRU SERVICED APARTMENTS PTE LTD, UEN 201420098R",
     "sgtbsapl@gmail.com - instagram.com/enghoonresidences",
   ];
@@ -2533,7 +2647,9 @@ function blobToDataUrl(blob) {
 }
 
 async function embeddedImageSource(image) {
-  const response = await fetch(image.currentSrc || image.src, { cache: "force-cache" });
+  const source = image.currentSrc || image.src;
+  if (/^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(source)) return source;
+  const response = await fetch(source, { cache: "force-cache" });
   if (!response.ok) throw new Error("The invoice logo could not be loaded.");
   return blobToDataUrl(await response.blob());
 }
@@ -2958,7 +3074,7 @@ window.addEventListener("beforeinstallprompt", (event) => {
 window.addEventListener("appinstalled", () => {
   installButton.hidden = true;
   installPrompt = undefined;
-  showToast("Ledgerly installed.");
+  showToast("Quotini installed.");
 });
 
 installButton.addEventListener("click", async () => {
@@ -2971,7 +3087,7 @@ installButton.addEventListener("click", async () => {
 
 document.querySelector(".skip-link").addEventListener("click", () => {
   requestAnimationFrame(() => {
-    const target = currentPage === "editor"
+    const target = currentPage === "settings" ? document.querySelector("#settingsTitle") : currentPage === "editor"
       ? editorTitle
       : currentPage === "history"
         ? document.querySelector("#invoiceListTitle")
@@ -3055,3 +3171,457 @@ window.addEventListener("afterprint", () => {
 updateConnectionStatus();
 updatePreviewScale();
 initializeApplication();
+
+const paymentDialog = document.querySelector("#paymentDialog");
+const paymentForm = document.querySelector("#paymentForm");
+const paymentStatus = document.querySelector("#paymentStatus");
+const paymentRemarks = document.querySelector("#paymentRemarks");
+const paymentScreenshot = document.querySelector("#paymentScreenshot");
+const paymentConfirmed = document.querySelector("#paymentConfirmed");
+const paymentPreview = document.querySelector("#paymentPreview");
+const paymentError = document.querySelector("#paymentError");
+const paymentSave = document.querySelector("#paymentSave");
+let paymentContext;
+let paymentImageVersion = 0;
+function previewPayment(screenshot) {
+  paymentPreview.hidden = !screenshot;
+  if (screenshot) paymentPreview.src = screenshot;
+  else paymentPreview.removeAttribute("src");
+}
+function updatePaymentFields() {
+  const needsEvidence = paymentStatus.value !== "unpaid";
+  document.querySelector("#paymentEvidence").hidden = !needsEvidence;
+  document.querySelector("#paymentEvidenceTitle").textContent = paymentStatus.value === "refunded" ? "Refund screenshot" : "Payment screenshot";
+  document.querySelector("#paymentRemovalHint").hidden = needsEvidence || !paymentContext?.value?.screenshot;
+}
+async function openPayment(record) {
+  const context = { uid: currentUser.id, epoch: sessionEpoch, id: record.id };
+  paymentContext = context;
+  paymentForm.reset();
+  updatePaymentFields();
+  paymentError.textContent = "Loading payment details…";
+  paymentSave.disabled = true;
+  previewPayment("");
+  document.querySelector("#paymentInvoiceNumber").textContent = record.invoice.invoiceNumber;
+  paymentDialog.showModal();
+  try {
+    const value = await backend.loadPayment(context.uid, context.id);
+    if (paymentContext !== context || currentUser?.id !== context.uid || sessionEpoch !== context.epoch) return;
+    Object.assign(context, { value, screenshot: value.screenshot, evidenceStatus: value.status });
+    paymentStatus.value = value.status;
+    paymentRemarks.value = value.remarks;
+    updatePaymentFields();
+    previewPayment(value.screenshot);
+    paymentError.textContent = "";
+    paymentSave.disabled = false;
+  } catch (error) { if (paymentContext === context) paymentError.textContent = error.message; }
+}
+paymentDialog.addEventListener("close", () => { paymentContext = null; paymentImageVersion++; previewPayment(""); });
+document.querySelector("#paymentCancel").addEventListener("click", () => paymentDialog.close());
+paymentStatus.addEventListener("change", () => {
+  updatePaymentFields();
+  paymentConfirmed.checked = false;
+  if (paymentContext) { paymentContext.screenshot = ""; paymentContext.evidenceStatus = paymentStatus.value; }
+  paymentScreenshot.value = "";
+  paymentImageVersion++;
+  previewPayment("");
+});
+paymentScreenshot.addEventListener("change", async () => {
+  const context = paymentContext;
+  const version = ++paymentImageVersion;
+  const file = paymentScreenshot.files[0];
+  paymentConfirmed.checked = false;
+  if (!context) return;
+  context.screenshot = "";
+  previewPayment("");
+  if (!file) return;
+  paymentSave.disabled = true;
+  paymentError.textContent = "Preparing screenshot…";
+  try {
+    if (!["image/png", "image/jpeg", "image/webp"].includes(file.type) || file.size > 10 * 1024 * 1024) throw new Error("Choose a PNG, JPEG or WebP screenshot up to 10 MB.");
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const drawing = canvas.getContext("2d");
+    drawing.fillStyle = "white"; drawing.fillRect(0, 0, canvas.width, canvas.height);
+    drawing.drawImage(bitmap, 0, 0, canvas.width, canvas.height); bitmap.close();
+    const screenshot = canvas.toDataURL("image/jpeg", 0.8);
+    if (screenshot.length > 700000) throw new Error("This screenshot is too large. Crop it to the transaction details and try again.");
+    if (paymentContext !== context || version !== paymentImageVersion) return;
+    context.screenshot = screenshot;
+    context.evidenceStatus = paymentStatus.value;
+    previewPayment(screenshot);
+    paymentError.textContent = "Review the preview before confirming.";
+  } catch (error) { if (paymentContext === context && version === paymentImageVersion) paymentError.textContent = error.message; }
+  finally { if (paymentContext === context) paymentSave.disabled = !context.value; }
+});
+paymentForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const context = paymentContext;
+  if (!context?.value || currentUser?.id !== context.uid || sessionEpoch !== context.epoch) return;
+  paymentSave.disabled = true;
+  try {
+    await backend.savePayment(context.uid, context.id, { revision: context.value.revision, status: paymentStatus.value, remarks: paymentRemarks.value.trim(), screenshot: context.screenshot, confirmed: paymentConfirmed.checked });
+    if (paymentContext !== context || currentUser?.id !== context.uid || sessionEpoch !== context.epoch) return;
+    paymentDialog.close();
+    await loadInvoiceHistory({ reset: true });
+    showToast("Payment details saved.");
+  } catch (error) { if (paymentContext === context) paymentError.textContent = error.message; }
+  finally { if (paymentContext === context) paymentSave.disabled = false; }
+});
+document.querySelector("#paymentFilter").addEventListener("change", () => loadInvoiceHistory({ reset: true }));
+
+function folderPath(id) {
+  const parts = [];
+  const visited = new Set();
+  while (id && !visited.has(id)) {
+    visited.add(id);
+    const folder = invoiceFolders.find(entry => entry.id === id);
+    if (!folder) break;
+    parts.unshift(folder);
+    id = folder.parentId;
+  }
+  return parts;
+}
+function navigateFolder(id) {
+  if (currentPage !== "history") showInvoiceList(false);
+  currentFolderId = id;
+  historyQuery = "";
+  invoiceSearch.value = "";
+  loadInvoiceHistory({ reset: true });
+}
+function renderFolders() {
+  const section = document.querySelector("#folderSection");
+  section.hidden = !backend.createFolder || !currentUser;
+  const sidebar = document.querySelector("#sidebarFolders");
+  sidebar.hidden = section.hidden;
+  const tree = document.querySelector("#sidebarFolderTree");
+  tree.replaceChildren();
+  if (section.hidden) return;
+  const activePath = new Set(folderPath(currentFolderId).map(folder => folder.id));
+  const addBranch = (parent, container, visited = new Set()) => {
+    invoiceFolders.filter(folder => folder.parentId === parent)
+      .sort((a, b) => a.name.localeCompare(b.name)).forEach(folder => {
+        if (visited.has(folder.id)) return;
+        const children = invoiceFolders.some(child => child.parentId === folder.id);
+        const row = document.createElement(children ? "details" : "div");
+        row.className = "sidebar-folder-branch";
+        if (children) row.open = activePath.has(folder.id);
+        const heading = document.createElement(children ? "summary" : "div");
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = folder.name;
+        button.title = folder.name;
+        if (folder.id === currentFolderId) button.setAttribute("aria-current", "page");
+        button.addEventListener("click", event => { event.preventDefault(); navigateFolder(folder.id); });
+        heading.append(button);
+        row.append(heading);
+        if (children) {
+          const nested = document.createElement("div");
+          nested.className = "sidebar-folder-children";
+          addBranch(folder.id, nested, new Set([...visited, folder.id]));
+          row.append(nested);
+        }
+        container.append(row);
+      });
+  };
+  const all = document.createElement("button");
+  all.type = "button";
+  all.textContent = "All folders";
+  if (currentFolderId === null) all.setAttribute("aria-current", "page");
+  all.addEventListener("click", () => navigateFolder(null));
+  tree.append(all);
+  addBranch("", tree);
+  const breadcrumbs = document.querySelector("#folderBreadcrumbs");
+  breadcrumbs.replaceChildren();
+  const crumb = (name, id, current) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = name;
+    button.setAttribute("aria-label", name);
+    if (current) button.setAttribute("aria-current", "page");
+    button.addEventListener("click", () => navigateFolder(id));
+    breadcrumbs.append(button);
+  };
+  crumb("All folders", null, currentFolderId === null);
+  if (currentFolderId === "") crumb("Unfiled", "", true);
+  folderPath(currentFolderId).forEach(folder => crumb(folder.name, folder.id, folder.id === currentFolderId));
+  const grid = document.querySelector("#folderGrid");
+  grid.replaceChildren();
+  const addFolder = (name, id, hint) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "folder-tile";
+    const icon = document.createElement("span");
+    icon.className = "folder-icon";
+    icon.setAttribute("aria-hidden", "true");
+    const label = document.createElement("span");
+    label.textContent = name;
+    const detail = document.createElement("small");
+    detail.textContent = hint;
+    button.append(icon, label, detail);
+    button.addEventListener("click", () => navigateFolder(id));
+    grid.append(button);
+  };
+  if (currentFolderId === null) addFolder("Unfiled", "", "Invoices without a folder");
+  invoiceFolders.filter(folder => folder.parentId === (currentFolderId || ""))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .forEach(folder => {
+      const count = invoiceFolders.filter(child => child.parentId === folder.id).length;
+      addFolder(folder.name, folder.id, count ? `${count} subfolder${count === 1 ? "" : "s"}` : "Open folder");
+    });
+  document.querySelector("#savedInvoicesTitle").textContent = currentFolderId === null ? "Saved invoices" : "Invoices in this folder";
+  const empty = document.querySelector("#historyNoResults");
+  if (currentFolderId !== null && !historyQuery && document.querySelector("#paymentFilter").value === "all") {
+    empty.querySelector("h2").textContent = "No invoices in this folder";
+    empty.querySelector("p").textContent = "Use More → Move to folder on an invoice to organise it here.";
+  } else {
+    empty.querySelector("h2").textContent = "No matching invoices";
+    empty.querySelector("p").textContent = "Try another search or payment status.";
+  }
+}
+function openFolderDialog(record = null) {
+  folderAction = { uid: currentUser.id, epoch: sessionEpoch, record, parentId: currentFolderId || "" };
+  const moving = Boolean(record);
+  document.querySelector("#folderForm").reset();
+  document.querySelector("#folderDialogTitle").textContent = moving ? "Move invoice" : "New folder";
+  document.querySelector("#folderDialogContext").textContent = moving ? record.invoice.invoiceNumber : `Inside ${folderPath(currentFolderId).map(folder => folder.name).join(" / ") || "All folders"}`;
+  document.querySelector("#folderNameField").hidden = moving;
+  document.querySelector("#folderName").required = !moving;
+  document.querySelector("#folderDestinationField").hidden = !moving;
+  const destination = document.querySelector("#folderDestination");
+  destination.replaceChildren(new Option("Unfiled", ""));
+  invoiceFolders.map(folder => ({ id: folder.id, path: folderPath(folder.id).map(entry => entry.name).join(" / ") }))
+    .sort((a, b) => a.path.localeCompare(b.path)).forEach(folder => destination.add(new Option(folder.path, folder.id)));
+  destination.value = record?.folderId || "";
+  document.querySelector("#folderError").textContent = "";
+  document.querySelector("#folderSave").disabled = false;
+  document.querySelector("#folderSave").textContent = moving ? "Move invoice" : "Create folder";
+  document.querySelector("#folderDialog").showModal();
+  document.querySelector(moving ? "#folderDestination" : "#folderName").focus();
+}
+document.querySelector("#newFolderButton").addEventListener("click", () => openFolderDialog());
+document.querySelector("#folderCancel").addEventListener("click", () => document.querySelector("#folderDialog").close());
+document.querySelector("#folderDialog").addEventListener("close", () => { folderAction = null; });
+document.querySelector("#folderForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  const action = folderAction;
+  if (!action || action.uid !== currentUser?.id || action.epoch !== sessionEpoch) return;
+  const button = document.querySelector("#folderSave");
+  button.disabled = true;
+  try {
+    if (action.record) await backend.moveInvoice(action.uid, action.record.id, document.querySelector("#folderDestination").value, action.record.folderId || "");
+    else await backend.createFolder(action.uid, document.querySelector("#folderName").value, action.parentId);
+    if (folderAction !== action || action.uid !== currentUser?.id || action.epoch !== sessionEpoch) return;
+    document.querySelector("#folderDialog").close();
+    await loadInvoiceHistory({ reset: true });
+    showToast(action.record ? "Invoice moved." : "Folder created.");
+  } catch (error) {
+    if (folderAction === action) document.querySelector("#folderError").textContent = error.message;
+  } finally { if (folderAction === action) button.disabled = false; }
+});
+document.addEventListener("click", event => {
+  if (!event.target.closest(".invoice-more")) document.querySelectorAll(".invoice-more[open]").forEach(menu => { menu.open = false; });
+});
+
+let logoUploadVersion = 0;
+document.querySelector("#invoiceLogoUpload").addEventListener("change", async event => {
+  const file = event.target.files[0];
+  if (!file) return;
+  const invoice = state;
+  const epoch = sessionEpoch;
+  const version = ++logoUploadVersion;
+  const message = document.querySelector("#invoiceAppearanceError");
+  message.textContent = "Preparing logo…";
+  try {
+    const data = await prepareInvoiceLogo(file);
+    if (state !== invoice || epoch !== sessionEpoch || version !== logoUploadVersion) return;
+    state.logo = data;
+    renderPreview(); saveDraft();
+    message.textContent = "Logo updated. Save the invoice to keep it.";
+  } catch (error) { if (state === invoice && epoch === sessionEpoch && version === logoUploadVersion) message.textContent = error.message; }
+  finally { event.target.value = ""; }
+});
+document.querySelector("#resetInvoiceLogo").addEventListener("click", () => {
+  logoUploadVersion++; state.logo = activeBusinessProfile?.logo || (activeBusinessProfile && activeBusinessProfile.id !== "default" ? EMPTY_PROFILE_LOGO : ""); renderPreview(); saveDraft();
+  document.querySelector("#invoiceAppearanceError").textContent = "Default logo restored.";
+});
+document.querySelector("#resetInvoiceTerms").addEventListener("click", () => {
+  state.terms = activeBusinessProfile?.terms ?? DEFAULT_INVOICE_TERMS;
+  document.querySelector("#terms").value = state.terms;
+  renderPreview(); saveDraft();
+});
+let attachmentContext;
+function currentAttachmentContext(context) {
+  return attachmentContext === context && currentUser?.id === context.uid && sessionEpoch === context.epoch;
+}
+async function refreshAttachments(context) {
+  const files = await backend.listAttachments(context.uid, context.id);
+  if (!currentAttachmentContext(context)) return;
+  const list = document.querySelector("#attachmentsList");
+  list.replaceChildren();
+  if (!files.length) {
+    const empty = document.createElement("li"); empty.textContent = "No files uploaded yet."; list.append(empty);
+  }
+  files.forEach(file => {
+    const row = document.createElement("li");
+    const name = document.createElement("span"); name.textContent = `${file.name} · ${Math.max(1, Math.round(file.size / 1024))} KB`;
+    const download = document.createElement("button"); download.type = "button"; download.className = "button button-secondary"; download.textContent = "Download";
+    download.addEventListener("click", async () => {
+      download.disabled = true;
+      try {
+        const blob = await backend.downloadAttachment(context.uid, context.id, file.id);
+        if (currentAttachmentContext(context)) downloadPdfBlob(blob, file.name);
+      } catch (error) { if (currentAttachmentContext(context)) document.querySelector("#attachmentsError").textContent = error.message; }
+      finally { download.disabled = false; }
+    });
+    const remove = document.createElement("button"); remove.type = "button"; remove.className = "button button-danger"; remove.textContent = "Remove";
+    remove.addEventListener("click", async () => {
+      if (!window.confirm(`Remove ${file.name}? This cannot be undone.`)) return;
+      remove.disabled = true;
+      try { await backend.deleteAttachment(context.uid, context.id, file.id); if (currentAttachmentContext(context)) await refreshAttachments(context); }
+      catch (error) { if (currentAttachmentContext(context)) document.querySelector("#attachmentsError").textContent = error.message; remove.disabled = false; }
+    });
+    row.append(name, download, remove); list.append(row);
+  });
+}
+async function openAttachments(record) {
+  const context = { uid: currentUser.id, epoch: sessionEpoch, id: record.id };
+  attachmentContext = context;
+  document.querySelector("#attachmentsInvoice").textContent = record.invoice.invoiceNumber;
+  document.querySelector("#attachmentsList").replaceChildren();
+  document.querySelector("#invoiceAttachments").value = "";
+  document.querySelector("#invoiceAttachments").disabled = true;
+  document.querySelector("#attachmentsError").textContent = "Loading files…";
+  document.querySelector("#attachmentsDialog").showModal();
+  try { await refreshAttachments(context); if (currentAttachmentContext(context)) document.querySelector("#attachmentsError").textContent = ""; }
+  catch (error) { if (currentAttachmentContext(context)) document.querySelector("#attachmentsError").textContent = error.message; }
+  finally { if (currentAttachmentContext(context)) document.querySelector("#invoiceAttachments").disabled = false; }
+}
+document.querySelector("#attachmentsClose").addEventListener("click", () => document.querySelector("#attachmentsDialog").close());
+document.querySelector("#attachmentsDialog").addEventListener("close", () => { attachmentContext = null; });
+document.querySelector("#invoiceAttachments").addEventListener("change", async event => {
+  const context = attachmentContext;
+  if (!context || !currentAttachmentContext(context)) return;
+  const files = [...event.target.files];
+  event.target.disabled = true;
+  try {
+    for (const file of files) {
+      if (!currentAttachmentContext(context)) return;
+      document.querySelector("#attachmentsError").textContent = `Uploading ${file.name}…`;
+      await backend.uploadAttachment(context.uid, context.id, file);
+    }
+    if (currentAttachmentContext(context)) { await refreshAttachments(context); document.querySelector("#attachmentsError").textContent = "Files uploaded."; }
+  } catch (error) {
+    if (currentAttachmentContext(context)) { await refreshAttachments(context).catch(() => {}); document.querySelector("#attachmentsError").textContent = error.message; }
+  } finally { if (currentAttachmentContext(context)) { event.target.disabled = false; event.target.value = ""; } }
+});
+
+document.querySelector("#sidebarNewFolder").addEventListener("click", () => openFolderDialog());
+
+var editingBusinessProfile;
+let profileUploadPending = false;
+function openBusinessProfile(create) {
+  if (!currentUser || !backend.listProfiles || outputBusy) return;
+  persistDraftImmediately();
+  currentPage = "settings";
+  document.body.dataset.page = "settings";
+  invoiceListPage.hidden = true;
+  editorPage.hidden = true;
+  printButton.hidden = true;
+  invoiceListButton.removeAttribute("aria-current");
+  newInvoiceButton.removeAttribute("aria-current");
+  document.querySelector("#editProfileButton").setAttribute("aria-current", "page");
+  document.querySelector("#settingsPage").hidden = false;
+  document.title = "Settings | Quotini";
+  window.scrollTo({top:0});
+  editingBusinessProfile = create ? { name: "", logo: "", terms: "" } : { ...activeBusinessProfile };
+  document.querySelector("#profileDialogTitle").textContent = create ? "New business profile" : "Profile settings";
+  document.querySelector("#profileName").value = editingBusinessProfile.name;
+  document.querySelector("#profileTerms").value = editingBusinessProfile.terms ?? DEFAULT_INVOICE_TERMS;
+  document.querySelector("#profileLogoUpload").value = "";
+  const preview = document.querySelector("#profileLogoPreview");
+  preview.hidden = !editingBusinessProfile.logo;
+  if (editingBusinessProfile.logo) preview.src = editingBusinessProfile.logo;
+  document.querySelector("#profileError").textContent = "";
+  document.querySelector("#profileSave").disabled = false;
+  document.querySelector("#settingsTitle").focus({preventScroll:true});
+}
+document.querySelector("#newProfileButton").addEventListener("click", () => openBusinessProfile(true));
+document.querySelector("#editProfileButton").addEventListener("click", () => openBusinessProfile(false));
+document.querySelector("#profileCancel").addEventListener("click", () => showInvoiceList());
+document.querySelector("#profileLogoUpload").addEventListener("change", async event => {
+  const file = event.target.files[0];
+  if (!file) return;
+  const profile = editingBusinessProfile;
+  profileUploadPending = true;
+  document.querySelector("#profileSave").disabled = true;
+  try {
+    profile.logo = await prepareInvoiceLogo(file);
+    if (editingBusinessProfile !== profile) return;
+    const preview = document.querySelector("#profileLogoPreview");
+    preview.src = profile.logo; preview.hidden = false;
+    document.querySelector("#profileError").textContent = "Logo ready. Save the profile to apply it.";
+  } catch(error) { if (editingBusinessProfile === profile) document.querySelector("#profileError").textContent = error.message; }
+  finally { profileUploadPending = false; document.querySelector("#profileSave").disabled = false; }
+});
+async function switchBusinessProfile(id) {
+  if (outputBusy) throw new Error("Wait for the invoice to finish saving before switching profiles.");
+  const persisted = await persistDraftImmediately();
+  await outboxWriteQueue;
+  if (!persisted && draftPersistenceEnabled && !await draftOutbox.has(currentUser.id)) throw new Error("Your draft could not be saved. Please retry before switching profiles.");
+  await backend.selectProfile(id);
+  // Reload clears in-flight requests and profile-specific UI; auth stays signed in.
+  window.location.reload();
+}
+document.querySelector("#profileSelect").addEventListener("change", async event => {
+  event.target.disabled = true;
+  try { await switchBusinessProfile(event.target.value); }
+  catch(error) { event.target.value = activeBusinessProfile.id; event.target.disabled = false; showToast(error.message); }
+});
+document.querySelector("#profileForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  if (!editingBusinessProfile || profileUploadPending) return;
+  const profile = editingBusinessProfile;
+  const uid = currentUser?.id;
+  document.querySelector("#profileSave").disabled = true;
+  try {
+    const saved = await backend.saveProfile({ ...profile, name: document.querySelector("#profileName").value, terms: document.querySelector("#profileTerms").value });
+    if (editingBusinessProfile !== profile || currentUser?.id !== uid) return;
+    if (!profile.id) { await switchBusinessProfile(saved.id); return; }
+    activeBusinessProfile = saved;
+    document.querySelector("#profileSelect option:checked").textContent = saved.name;
+    editingBusinessProfile = { ...saved };
+    document.querySelector("#profileError").textContent = "Changes saved.";
+    showToast("Profile saved. Defaults apply to new invoices.");
+  } catch(error) { if (editingBusinessProfile === profile) document.querySelector("#profileError").textContent = error.message; }
+  finally { document.querySelector("#profileSave").disabled = false; }
+});
+
+async function prepareInvoiceLogo(file) {
+    if (!["image/png", "image/jpeg", "image/webp"].includes(file.type) || file.size > 10 * 1024 * 1024) throw new Error("Choose a PNG, JPEG or WebP image up to 10 MB.");
+    const image = await createImageBitmap(file);
+    if (image.width !== 600 || image.height !== 530) {
+      const dimensions = `${image.width} × ${image.height}`;
+      image.close();
+      throw new Error(`Your logo is ${dimensions} px. Upload a logo that is exactly 600 × 530 px to match the invoice layout.`);
+    }
+    const scale = Math.min(1, 400 / Math.max(image.width, image.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(image.width * scale));
+    canvas.height = Math.max(1, Math.round(image.height * scale));
+    canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+    image.close();
+    let data = canvas.toDataURL("image/png");
+    if (data.length > 120000) {
+      const context = canvas.getContext("2d");
+      context.globalCompositeOperation = "destination-over";
+      context.fillStyle = "white";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      data = canvas.toDataURL("image/jpeg", .75);
+    }
+    if (data.length > 120000) throw new Error("This logo is too detailed. Use a smaller or simpler image.");
+    return data;
+}

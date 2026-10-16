@@ -1,6 +1,6 @@
 {
-  "name": "Ledgerly for Eng Hoon Residences",
-  "short_name": "Ledgerly",
+  "name": "Quotini",
+  "short_name": "Quotini",
   "description": "Create, save, and export print-ready invoices on this device.",
   "start_url": "./",
   "scope": "./",

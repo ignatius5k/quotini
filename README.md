@@ -1,4 +1,6 @@
-# Ledgerly
+# Quotini
+
+Formerly Ledgerly. The app name is now Quotini; existing storage keys, Firebase project identifiers and deployment URLs are retained for compatibility.
 
 Firebase prototype branch: start the seeded demo with `npm run prototype`. See [prototype launch and verification](docs/PROTOTYPE-LAUNCH.md) for sample accounts, test results, and release limitations.
 

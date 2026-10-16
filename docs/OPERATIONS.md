@@ -4,7 +4,7 @@
 
 Each Firebase Authentication account owns a separate Firestore workspace. Sign in with the same email/password on another device to retrieve committed invoices and synced drafts. **Refresh** retrieves changes made elsewhere. An edited invoice retains its original revision; concurrent changes cause save to be rejected while the current edits remain available for recovery.
 
-Download backups regularly and retain important PDFs. JSON backups contain customer and invoice data, but do not include Cloud Storage PDF files. Account restore imports matching/new records, preserves numbering, and stops at conflicts without overwriting them. If an import partly succeeds, retrying skips identical records. A conflicting account draft is retained, and the source backup/local copy is preserved.
+Download backups regularly and retain important PDFs. JSON backups contain customer and invoice data, but do not include Cloud Storage PDF files or other attachments. Account restore imports matching/new records, preserves numbering, and stops at conflicts without overwriting them. If an import partly succeeds, retrying skips identical records. A conflicting account draft is retained, and the source backup/local copy is preserved.
 
 Invoice deletion applies to the account on every device and requires confirmation in the app. The numbering counter remains. Stored PDFs become inaccessible while their Firestore invoice is absent; PDF objects are retained for separate administrative cleanup and may continue using storage. Deleting a Firebase Authentication user does not automatically delete their Firestore subcollections; any administrative removal workflow must explicitly handle that data and the user’s Cloud Storage objects.
 
